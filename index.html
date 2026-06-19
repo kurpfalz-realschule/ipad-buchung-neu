@@ -169,6 +169,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="daten.js"></script>
 
   <script>
   (function () {
@@ -207,14 +208,44 @@
     }
 
     // ════════════════════════════════════════════════════════════════
-    // MOCK-DATEN (Demo-Modus)
+    // STAMMDATEN (aus daten.js) + MOCK-Ableitung (Demo-Modus)
     // ════════════════════════════════════════════════════════════════
-    var MOCK_KOFFER = [
-      { id: 1, barcode: 'KOFFER-01', bezeichnung: 'iPad-Koffer 1 (16 Geräte)', typ: 'ipad_koffer', kapazitaet: 16, standort: 'Medienraum E04', aktiv: true, notiz: '' },
-      { id: 2, barcode: 'KOFFER-02', bezeichnung: 'iPad-Koffer 2 (16 Geräte)', typ: 'ipad_koffer', kapazitaet: 16, standort: 'Medienraum E04', aktiv: true, notiz: '' },
-      { id: 3, barcode: 'BEAMER-01', bezeichnung: 'Mobiler Beamer (Epson)', typ: 'beamer', kapazitaet: 1, standort: 'Lehrerzimmer', aktiv: true, notiz: 'HDMI + VGA' },
-      { id: 4, barcode: 'KOFFER-03', bezeichnung: 'iPad-Koffer 3 (8 Geräte)', typ: 'ipad_koffer', kapazitaet: 8, standort: 'Raum 112', aktiv: false, notiz: 'Defekt — in Reparatur' }
-    ];
+    var MEDIEN = (window.KRS_MEDIEN) || { KOFFER: [], LEHRER: [], SLOTS: [], AKTIONEN: [], STUNDEN_ZEITEN: {} };
+    var MOCK_KOFFER = (MEDIEN.KOFFER.length ? MEDIEN.KOFFER : [
+      { barcode: 'KOFFER-01', bezeichnung: 'iPad-Koffer 1', typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ', notiz: '' }
+    ]).map(function (k, i) { return Object.assign({ id: i + 1, aktiv: true }, k); });
+
+    // ── Lehrer-Code-Auflösung (Demo): L-<Kürzel> → Lehrer ──
+    var LEHRER_BY_CODE = {};
+    (MEDIEN.LEHRER || []).forEach(function (l, i) {
+      LEHRER_BY_CODE['L-' + l.kuerzel.toUpperCase()] = { id: 9000 + i, display_name: l.name, kuerzel: l.kuerzel, role: 'member' };
+    });
+
+    // ── Klingelzeiten → aktuelle Schulstunde ──
+    function parseHM(s) { var p = (s || '0:0').split(':'); return Number(p[0]) * 60 + Number(p[1]); }
+    function aktuelleStunde(now) {
+      now = now || new Date();
+      var min = now.getHours() * 60 + now.getMinutes();
+      var z = MEDIEN.STUNDEN_ZEITEN || {};
+      var keys = Object.keys(z).map(Number).sort(function (a, b) { return a - b; });
+      for (var i = 0; i < keys.length; i++) {
+        var s = keys[i], span = z[s];
+        if (min >= parseHM(span[0]) && min < parseHM(span[1])) return s;
+        if (min < parseHM(span[0])) return s; // vor Schulbeginn → 1.; in Pause → nächste
+      }
+      return keys[keys.length - 1] || 1; // nach der letzten Stunde
+    }
+    // Slot-Barcode → {von, bis}
+    function slotToRange(slotCode, now) {
+      var s = (MEDIEN.SLOTS || []).find(function (x) { return x.code === slotCode; });
+      var cur = aktuelleStunde(now);
+      if (!s) return null;
+      if (s.kind === 'jetzt')    return { von: cur, bis: cur, label: cur + '. Stunde' };
+      if (s.kind === 'naechste') return { von: Math.min(cur + 1, 8), bis: Math.min(cur + 1, 8), label: (Math.min(cur + 1, 8)) + '. Stunde' };
+      if (s.kind === 'doppel')   return { von: cur, bis: Math.min(cur + 1, 8), label: cur + '.–' + Math.min(cur + 1, 8) + '. Stunde' };
+      if (s.kind === 'fix')      return { von: s.stunde, bis: s.stunde, label: s.stunde + '. Stunde' };
+      return null;
+    }
 
     // ════════════════════════════════════════════════════════════════
     // DataService — demo ↔ supabase (identische Methoden-Signaturen)
@@ -230,6 +261,14 @@
       this._seq = 1000;
     }
     DataService.prototype.setUser = function (u) { this.user = u; };
+    // Auto-Rückbuchung anstoßen (Supabase): heutige Buchungen, deren Stunde
+    // vorbei ist, schließen. Demo: passiert inline über bookingActive().
+    DataService.prototype.autoReturnDue = function () {
+      if (this.isDemo) return Promise.resolve(0);
+      return this.sb.rpc('rpc_auto_return_due', { p_stunde: aktuelleStunde() })
+        .then(function (r) { if (r.error) throw r.error; return r.data || 0; })
+        .catch(function () { return 0; });
+    };
 
     // ── Koffer-Bestand ──
     DataService.prototype.getKoffer = function () {
@@ -242,13 +281,18 @@
     DataService.prototype.getOffeneKofferIds = function () {
       if (this.isDemo) {
         var open = {};
-        // letztes Event je Koffer bestimmt Status
         var byKoffer = {};
         this._ausgaben.forEach(function (a) {
           if (!byKoffer[a.koffer_id] || a.ts > byKoffer[a.koffer_id].ts) byKoffer[a.koffer_id] = a;
         });
+        var self = this, now = new Date();
         Object.keys(byKoffer).forEach(function (kid) {
-          if (byKoffer[kid].aktion === 'checkout') open[kid] = true;
+          var ev = byKoffer[kid];
+          if (ev.aktion !== 'checkout') return;
+          // Auto-Rückbuchung: wenn die zugehörige Buchung zeitlich vorbei ist → frei
+          var b = ev.buchung_id ? self._buchungen.find(function (x) { return x.id === ev.buchung_id; }) : null;
+          if (b && !bookingActive(b, now)) return;
+          open[kid] = true;
         });
         return Promise.resolve(open);
       }
@@ -387,6 +431,84 @@
         .then(function (r) { if (r.error) throw r.error; return r.data; });
     };
 
+    // ── Auto-Rückbuchung: Buchung gilt als „aktiv", solange ihr Zeitfenster
+    //    (heute, bis Ende der bis-Stunde) noch nicht vorbei ist. ──
+    function bookingActive(b, now) {
+      now = now || new Date();
+      if (b.status === 'storniert' || b.status === 'zurueck') return false;
+      var today = todayISO();
+      if (b.datum < today) return false;
+      if (b.datum > today) return true;
+      var z = (MEDIEN.STUNDEN_ZEITEN || {})[b.stunde_bis];
+      if (!z) return true;
+      var endMin = parseHM(z[1]);
+      return (now.getHours() * 60 + now.getMinutes()) < endMin;
+    }
+
+    // ── Wand-Station: Ausbuchen (Lehrercode + Koffer + Slot) ──
+    DataService.prototype.stationCheckout = function (lehrerCode, barcode, range, idempotencyKey) {
+      var self = this;
+      if (this.isDemo) {
+        return new Promise(function (resolve, reject) {
+          var lehrer = LEHRER_BY_CODE[(lehrerCode || '').toUpperCase()];
+          if (!lehrer) return reject(makeErr('lehrer_unbekannt', lehrerCode));
+          var k = self._koffer.find(function (x) { return x.barcode === barcode; });
+          if (!k) return reject(makeErr('koffer_not_found', barcode));
+          if (!k.aktiv) return reject(makeErr('koffer_inactive', barcode));
+          var today = todayISO(), now = new Date();
+          // Konflikt: aktive Buchung auf diesem Koffer, die das Fenster überlappt
+          var belegt = self._buchungen.some(function (b) {
+            return b.koffer_id === k.id && b.datum === today && bookingActive(b, now) &&
+              b.stunde_von <= range.bis && b.stunde_bis >= range.von;
+          });
+          if (belegt) {
+            var frei = self._koffer.filter(function (c) {
+              return c.aktiv && !self._buchungen.some(function (b) {
+                return b.koffer_id === c.id && b.datum === today && bookingActive(b, now) && b.stunde_von <= range.bis && b.stunde_bis >= range.von;
+              });
+            }).length;
+            var err = makeErr(frei === 0 ? 'alles_belegt' : 'kapazitaet_belegt', barcode);
+            err.frei = frei; return reject(err);
+          }
+          var buchung = { id: ++self._seq, koffer_id: k.id, user_id: lehrer.id, datum: today,
+            stunde_von: range.von, stunde_bis: range.bis, status: 'ausgegeben', zweck: lehrer.kuerzel, created_at: now.toISOString() };
+          self._buchungen.push(buchung);
+          self._ausgaben.push({ id: ++self._seq, koffer_id: k.id, buchung_id: buchung.id, user_id: lehrer.id, aktion: 'checkout', ts: now.toISOString(), idempotency_key: idempotencyKey });
+          resolve({ koffer: k, lehrer: lehrer, range: range });
+        });
+      }
+      return this.sb.rpc('rpc_station_checkout', {
+        p_lehrer_code: lehrerCode, p_barcode: barcode,
+        p_von: range.von, p_bis: range.bis, p_idempotency_key: idempotencyKey
+      }).then(function (r) { if (r.error) throw self._rpcErr(r.error); return r.data; });
+    };
+
+    // ── Wand-Station: Rückgabe (nur Koffer scannen) ──
+    DataService.prototype.stationReturn = function (barcode, idempotencyKey) {
+      var self = this;
+      if (this.isDemo) {
+        return new Promise(function (resolve, reject) {
+          var k = self._koffer.find(function (x) { return x.barcode === barcode; });
+          if (!k) return reject(makeErr('koffer_not_found', barcode));
+          var last = null;
+          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.ts > last.ts)) last = a; });
+          if (!last || last.aktion !== 'checkout') return reject(makeErr('not_checked_out', barcode));
+          self._ausgaben.push({ id: ++self._seq, koffer_id: k.id, buchung_id: last.buchung_id, user_id: last.user_id, aktion: 'return', ts: new Date().toISOString(), idempotency_key: idempotencyKey });
+          var b = self._buchungen.find(function (x) { return x.id === last.buchung_id; }); if (b) b.status = 'zurueck';
+          resolve({ koffer: k });
+        });
+      }
+      return this.sb.rpc('rpc_station_return', { p_barcode: barcode, p_idempotency_key: idempotencyKey })
+        .then(function (r) { if (r.error) throw self._rpcErr(r.error); return r.data; });
+    };
+
+    // Postgres-RAISE-Message → Error mit code (erste :-getrennte Komponente)
+    DataService.prototype._rpcErr = function (e) {
+      var msg = (e && e.message) || 'fehler';
+      var m = msg.match(/(lehrer_unbekannt|koffer_not_found|koffer_inactive|already_checked_out|not_checked_out|kapazitaet_belegt|alles_belegt|not_authenticated)/);
+      var err = new Error(msg); err.code = m ? m[1] : null; return err;
+    };
+
     function makeErr(code, detail) { var err = new Error(code + (detail ? ':' + detail : '')); err.code = code; return err; }
 
     // Fehlercode → deutsche Meldung
@@ -399,7 +521,9 @@
         already_checked_out: 'Koffer ist bereits ausgegeben.',
         not_checked_out: 'Für diesen Koffer ist keine offene Ausgabe vorhanden.',
         not_authenticated: 'Bitte zuerst anmelden.',
-        kapazitaet_belegt: 'Zeitfenster ist bereits belegt.'
+        kapazitaet_belegt: 'Dieser Koffer ist in dieser Stunde belegt.',
+        alles_belegt: 'Alle Koffer sind in dieser Stunde belegt!',
+        lehrer_unbekannt: 'Lehrer-Code nicht erkannt.'
       };
       return map[code] || ('Fehler: ' + (err && err.message ? err.message : 'unbekannt'));
     }
@@ -439,7 +563,9 @@
 
       var reload = useCallback(function () {
         setLoading(true);
-        Promise.all([ds.getKoffer(), ds.getOffeneKofferIds()]).then(function (res) {
+        ds.autoReturnDue().then(function () {
+          return Promise.all([ds.getKoffer(), ds.getOffeneKofferIds()]);
+        }).then(function (res) {
           setKoffer(res[0]); setOpen(res[1]); setLoading(false);
         }).catch(function (err) { showToast(errMsg(err), 'error'); setLoading(false); });
       }, [ds]);
@@ -552,56 +678,103 @@
     }
     function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück' })[s] || s; }
 
-    function ScannenView(props) {
+    // ── Wand-Station (Kiosk): Lehrercode → (Slot) → Koffer = Ausbuchen;
+    //    Rückgabe-Code → Koffer = Rückgabe. Ein USB/BT-Scanner tippt den Code
+    //    und löst per Enter aus. State liegt in einem Ref (robust gg. schnelle Scans).
+    function StationView(props) {
       var ds = props.ds;
-      var [barcode, setBarcode] = useState('');
+      var [input, setInput] = useState('');
       var [busy, setBusy] = useState(false);
+      var [tick, setTick] = useState(0);
       var [result, setResult] = useState(null);
+      var st = useRef({ lehrer: null, mode: 'checkout', slot: null });
       var inputRef = useRef(null);
+      var rerender = function () { setTick(function (n) { return n + 1; }); };
+      var refocus = function () { setTimeout(function () { if (inputRef.current) inputRef.current.focus(); }, 0); };
 
-      var doAction = useCallback(function (kind) {
-        var bc = barcode.trim();
-        if (!bc) { showToast('Bitte Barcode eingeben oder scannen.', 'error'); return; }
-        setBusy(true); setResult(null);
-        var key = uuid();
-        var p = kind === 'checkout' ? ds.checkout(bc, key) : ds.returnKoffer(bc, key);
-        p.then(function (row) {
-          var msg = kind === 'checkout' ? 'Ausgegeben' : 'Zurückgenommen';
-          if (row && row.idempotent) msg += ' (bereits erfasst)';
-          setResult({ ok: true, text: msg + ' · ' + bc });
-          showToast(msg + '.', 'success');
-          setBarcode('');
-          if (props.onChange) props.onChange();
+      var reset = function (keepMode) { st.current = { lehrer: null, mode: keepMode ? st.current.mode : 'checkout', slot: null }; rerender(); };
+
+      var doCheckout = function (lehrerCode, barcode) {
+        var range = st.current.slot || slotToRange('SLOT-JETZT');
+        setBusy(true);
+        ds.stationCheckout(lehrerCode, barcode, range, uuid()).then(function (res) {
+          var name = (res.lehrer && res.lehrer.display_name) || (st.current.lehrer && st.current.lehrer.display_name) || lehrerCode;
+          var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
+          setResult({ ok: true, title: 'Ausgegeben', text: kname + ' → ' + name + ' · ' + range.label });
+          showToast('Ausgegeben: ' + kname, 'success');
+          reset(true); if (props.onChange) props.onChange();
         }).catch(function (err) {
-          setResult({ ok: false, text: errMsg(err) });
+          setResult({ ok: false, title: 'Fehler', text: errMsg(err) });
           showToast(errMsg(err), 'error');
-        }).then(function () {
-          setBusy(false);
-          if (inputRef.current) inputRef.current.focus();
-        });
-      }, [ds, barcode, props]);
+        }).then(function () { setBusy(false); refocus(); });
+      };
+      var doReturn = function (barcode) {
+        setBusy(true);
+        ds.stationReturn(barcode, uuid()).then(function (res) {
+          var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
+          setResult({ ok: true, title: 'Zurückgegeben', text: kname + ' ist wieder verfügbar.' });
+          showToast('Zurückgegeben: ' + kname, 'success');
+          reset(false); if (props.onChange) props.onChange();
+        }).catch(function (err) {
+          setResult({ ok: false, title: 'Fehler', text: errMsg(err) });
+          showToast(errMsg(err), 'error');
+        }).then(function () { setBusy(false); refocus(); });
+      };
 
-      return e('div', { 'data-testid': 'scannen-view' },
-        e('div', { className: 'section-title' }, 'Ausgabe & Rückgabe'),
+      var processCode = function (raw) {
+        var code = (raw || '').trim();
+        setInput('');
+        if (!code) return;
+        if (/^L-/i.test(code)) {
+          var l = LEHRER_BY_CODE[code.toUpperCase()];
+          st.current.lehrer = l ? Object.assign({ code: code }, l) : { code: code, kuerzel: code.replace(/^L-/i, ''), display_name: code.replace(/^L-/i, '') };
+          st.current.mode = 'checkout'; setResult(null); rerender(); refocus(); return;
+        }
+        if (/^AKTION-RUECKGABE$/i.test(code)) { st.current = { lehrer: null, mode: 'return', slot: null }; setResult(null); rerender(); refocus(); return; }
+        if (/^SLOT-/i.test(code)) {
+          var r = slotToRange(code.toUpperCase());
+          if (r) { st.current.slot = r; rerender(); } else { setResult({ ok: false, title: 'Fehler', text: 'Unbekannter Stunden-Code.' }); }
+          refocus(); return;
+        }
+        // sonst: Koffer-Barcode → Aktion
+        if (st.current.mode === 'return') { doReturn(code); return; }
+        if (!st.current.lehrer) { setResult({ ok: false, title: 'Erst Lehrer-Code', text: 'Bitte zuerst den Lehrer-Code scannen.' }); refocus(); return; }
+        doCheckout(st.current.lehrer.code, code);
+      };
+
+      var s = st.current;
+      var prompt = s.mode === 'return'
+        ? 'Koffer scannen zum Zurückgeben'
+        : (!s.lehrer ? 'Lehrer-Code scannen' : (s.slot ? 'Koffer scannen' : 'Koffer scannen (oder Stunden-Code für Vorausbuchung)'));
+
+      return e('div', { 'data-testid': 'station-view' },
+        e('div', { className: 'section-title' }, 'Wand-Station — Scannen'),
         e('div', { className: 'card' },
+          // Status-Chips (aktueller Schritt)
+          e('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' } },
+            e('span', { className: 'status-pill ' + (s.mode === 'return' ? 'ausgegeben' : (s.lehrer ? 'frei' : 'reserviert')), 'data-testid': 'station-mode' },
+              s.mode === 'return' ? '📥 Rückgabe' : (s.lehrer ? ('👩‍🏫 ' + (s.lehrer.display_name || s.lehrer.kuerzel)) : '① Lehrer-Code')),
+            s.mode === 'checkout' && s.slot && e('span', { className: 'status-pill reserviert', 'data-testid': 'station-slot' }, '🕑 ' + s.slot.label)
+          ),
+          e('div', { className: 'big-text', style: { fontSize: '17px', fontWeight: 700, marginBottom: '10px' }, 'data-testid': 'station-prompt' }, prompt),
           e('div', { className: 'field' },
-            e('label', null, 'Barcode (scannen oder eintippen)'),
             e('input', {
-              ref: inputRef, type: 'text', value: barcode, autoFocus: true,
-              placeholder: 'z. B. KOFFER-01', 'data-testid': 'scan-barcode',
-              onChange: function (ev) { setBarcode(ev.target.value); },
-              onKeyDown: function (ev) { if (ev.key === 'Enter') doAction('checkout'); }
+              ref: inputRef, type: 'text', value: input, autoFocus: true, disabled: busy,
+              placeholder: 'Barcode scannen oder tippen …', 'data-testid': 'station-input',
+              onChange: function (ev) { setInput(ev.target.value); },
+              onKeyDown: function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); processCode(input); } }
             })
           ),
           e('div', { className: 'btn-row' },
-            e('button', { className: 'btn', onClick: function () { doAction('checkout'); }, disabled: busy, 'data-testid': 'scan-checkout' }, '📤 Ausgeben'),
-            e('button', { className: 'btn btn-success', onClick: function () { doAction('return'); }, disabled: busy, 'data-testid': 'scan-return' }, '📥 Zurücknehmen')
+            e('button', { className: 'btn', disabled: busy, onClick: function () { processCode(input); }, 'data-testid': 'station-go' }, '↵ Scannen'),
+            e('button', { className: 'btn btn-ghost', onClick: function () { reset(false); setResult(null); refocus(); }, 'data-testid': 'station-reset' }, '✕ Abbrechen')
           ),
-          result && e('div', { className: 'big-status ' + (result.ok ? 'ok' : 'err'), 'data-testid': 'scan-result' },
+          result && e('div', { className: 'big-status ' + (result.ok ? 'ok' : 'err'), 'data-testid': 'station-result' },
             e('div', { className: 'big-icon' }, result.ok ? '✓' : '✕'),
-            e('div', { className: 'big-text' }, result.text)
+            e('div', { className: 'big-text' }, result.title),
+            e('div', { style: { fontSize: '13px', marginTop: '2px' } }, result.text)
           ),
-          e('div', { className: 'inline-note' }, 'Tipp: Mit einem USB-/Bluetooth-Scanner einfach scannen — der Scanner tippt den Code und löst „Ausgeben" per Enter aus.')
+          e('div', { className: 'inline-note' }, 'Ablauf: ① Lehrer-Code  →  ② optional Stunde/Doppelstunde  →  ③ Koffer = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer.')
         )
       );
     }
@@ -694,12 +867,12 @@
           : e(React.Fragment, null,
               e('nav', { className: 'tabs', role: 'tablist' },
                 tabBtn('reservieren', '🗓️', 'Reservieren', tab, setTab),
-                tabBtn('scannen', '📷', 'Scannen', tab, setTab),
+                tabBtn('scannen', '📷', 'Station', tab, setTab),
                 tabBtn('bestand', '📦', 'Bestand', tab, setTab)
               ),
               e('main', { className: 'content' },
                 tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, onChange: bump }),
-                tab === 'scannen' && e(ScannenView, { ds: ds, onChange: bump }),
+                tab === 'scannen' && e(StationView, { ds: ds, onChange: bump }),
                 tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey })
               )
             ),

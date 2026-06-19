@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KRS iPad-Buchung — Etiketten zum Drucken</title>
+  <style>
+    :root { --border:#cbd5e1; --text:#1e293b; --muted:#64748b; --accent:#7c3aed; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; color: var(--text); margin: 0; background: #f1f5f9; }
+    .toolbar { position: sticky; top: 0; background: #fff; border-bottom: 1px solid var(--border); padding: 12px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; z-index: 10; }
+    .toolbar h1 { font-size: 16px; margin: 0; flex: 1; }
+    .toolbar button { min-height: 40px; padding: 0 16px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; font-size: 14px; cursor: pointer; }
+    .toolbar label { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+    main { padding: 16px; max-width: 920px; margin: 0 auto; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 22px 0 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+    .label { border: 1px dashed var(--border); border-radius: 10px; padding: 12px; background: #fff; text-align: center; page-break-inside: avoid; break-inside: avoid; }
+    .label .name { font-size: 14px; font-weight: 700; }
+    .label .sub { font-size: 11px; color: var(--muted); margin-bottom: 6px; min-height: 14px; }
+    .label svg { width: 100%; height: 56px; }
+    .label .code { font-size: 11px; color: var(--muted); margin-top: 2px; letter-spacing: .5px; }
+    .label.action { border-style: solid; border-color: var(--accent); }
+    .hint { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+    @media print {
+      .toolbar, .hint { display: none !important; }
+      body { background: #fff; }
+      main { max-width: none; padding: 0; }
+      .label { border-color: #94a3b8; }
+      h2 { page-break-after: avoid; }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="daten.js"></script>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>🏷️ iPad-Buchung — Etiketten</h1>
+    <span class="hint" id="status"></span>
+    <button onclick="window.print()">🖨️ Drucken</button>
+  </div>
+  <main id="root">
+    <p class="hint">Lade Daten …</p>
+  </main>
+
+  <script>
+  (function () {
+    var M = window.KRS_MEDIEN;
+    var root = document.getElementById('root');
+    if (!M || typeof JSBarcode === 'undefined' && typeof window.JsBarcode === 'undefined') {
+      root.innerHTML = '<p>Fehler: Daten (daten.js) oder JsBarcode konnten nicht geladen werden.</p>';
+      return;
+    }
+    var BAR = window.JsBarcode;
+
+    function label(value, name, sub, isAction) {
+      var div = document.createElement('div');
+      div.className = 'label' + (isAction ? ' action' : '');
+      var h = document.createElement('div'); h.className = 'name'; h.textContent = name; div.appendChild(h);
+      var s = document.createElement('div'); s.className = 'sub'; s.textContent = sub || ''; div.appendChild(s);
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); div.appendChild(svg);
+      var code = document.createElement('div'); code.className = 'code'; code.textContent = value; div.appendChild(code);
+      // Barcode rendern (Code128)
+      try { BAR(svg, value, { format: 'CODE128', displayValue: false, margin: 0, height: 50 }); } catch (e) {}
+      return div;
+    }
+    function section(title, hintText) {
+      var h = document.createElement('h2'); h.textContent = title; root.appendChild(h);
+      if (hintText) { var p = document.createElement('p'); p.className = 'hint'; p.textContent = hintText; root.appendChild(p); }
+      var g = document.createElement('div'); g.className = 'grid'; root.appendChild(g); return g;
+    }
+
+    root.innerHTML = '';
+
+    // 1 · Koffer
+    var g1 = section('Koffer / Geräte (am Koffer anbringen)');
+    M.KOFFER.forEach(function (k) {
+      g1.appendChild(label(k.barcode, k.bezeichnung, k.standort + (k.kapazitaet > 0 ? ' · ' + k.kapazitaet + ' Geräte' : '') + (k.notiz ? ' · ' + k.notiz : '')));
+    });
+
+    // 2 · Lehrer-Codes
+    var g2 = section('Lehrer-Codes (an der Wand · zuerst scannen)', 'Jede Lehrkraft scannt ihren Code, bevor sie einen Koffer ausbucht.');
+    M.LEHRER.forEach(function (l) {
+      g2.appendChild(label('L-' + l.kuerzel, l.name, 'Kürzel ' + l.kuerzel));
+    });
+
+    // 3 · Aktions- & Stunden-Codes
+    var g3 = section('Aktions- & Stunden-Codes (an der Wand)', 'Rückgabe und Last-Minute-Buchung für aktuelle/nächste Stunde oder Doppelstunde.');
+    M.AKTIONEN.forEach(function (a) { g3.appendChild(label(a.code, (a.icon ? a.icon + ' ' : '') + a.label, a.sub, true)); });
+    M.SLOTS.forEach(function (sl) { g3.appendChild(label(sl.code, sl.label, sl.sub || 'feste Stunde', true)); });
+
+    document.getElementById('status').textContent =
+      M.KOFFER.length + ' Koffer · ' + M.LEHRER.length + ' Lehrer · ' + (M.AKTIONEN.length + M.SLOTS.length) + ' Aktions-Codes';
+  })();
+  </script>
+</body>
+</html>
