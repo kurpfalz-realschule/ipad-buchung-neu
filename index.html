@@ -124,6 +124,15 @@
     .status-pill.ausgegeben { background: var(--warning-bg); color: var(--warning); }
     .status-pill.inaktiv { background: var(--danger-bg); color: var(--danger); }
     .status-pill.reserviert { background: #ede9fe; color: var(--primary-dark); }
+    /* Feedback #9: Storno-Button in „Meine Buchungen" */
+    .storno-btn {
+      flex: none; min-height: 44px; padding: 8px 12px;
+      border: 1px solid var(--danger); border-radius: var(--radius-sm);
+      background: var(--bg-card); color: var(--danger);
+      font-size: 12px; font-weight: 600;
+    }
+    .storno-btn:hover { background: var(--danger-bg); }
+    @media (max-width: 480px) { .buchung-item { flex-wrap: wrap; } .storno-btn { margin-left: 52px; } }
 
     .empty { text-align: center; padding: 32px 16px; color: var(--text-muted); }
     .empty .empty-icon { font-size: 40px; margin-bottom: 8px; }
@@ -170,6 +179,9 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="daten.js"></script>
+  <!-- S2: optionale lokale Überschreibung mit echten Stammdaten
+       (daten.local.js ist gitignored; 404 im Deploy ist beabsichtigt) -->
+  <script src="daten.local.js"></script>
 
   <script>
   (function () {
@@ -190,7 +202,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.0.0';
+    window.KRS_BUCHUNG_VERSION = '1.1.0'; // 10.07.2026: Storno-Button in „Meine Buchungen" (Feedback Stresstest)
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -220,6 +232,25 @@
     (MEDIEN.LEHRER || []).forEach(function (l, i) {
       LEHRER_BY_CODE['L-' + l.kuerzel.toUpperCase()] = { id: 9000 + i, display_name: l.name, kuerzel: l.kuerzel, role: 'member' };
     });
+
+    // S2: Im Supabase-Modus kommt die Anzeige-Liste aus public.users über
+    // die SECURITY-DEFINER-RPC get_kollegium_public() (nur mit Session;
+    // anon hat kein EXECUTE → dann bleibt der Demo-Fallback aktiv).
+    // Autoritativ für Buchungen bleibt ohnehin der Server
+    // (rpc_station_checkout löst den Lehrer-Code selbst auf).
+    function refreshLehrerFromDb(client) {
+      return client.rpc('get_kollegium_public').then(function (r) {
+        if (r.error || !r.data || !r.data.length) return;
+        var map = {};
+        r.data.forEach(function (u) {
+          if (!u.kuerzel) return;
+          map['L-' + String(u.kuerzel).toUpperCase()] = {
+            id: u.id, display_name: u.display_name, kuerzel: u.kuerzel, role: u.role || 'member'
+          };
+        });
+        LEHRER_BY_CODE = map;
+      }).catch(function () { /* Demo-Fallback bleibt */ });
+    }
 
     // ── Klingelzeiten → aktuelle Schulstunde ──
     function parseHM(s) { var p = (s || '0:0').split(':'); return Number(p[0]) * 60 + Number(p[1]); }
@@ -671,7 +702,24 @@
                   e('div', { className: 'name' }, k.bezeichnung || ('Koffer #' + b.koffer_id)),
                   e('div', { className: 'meta' }, b.datum + ' · ' + b.stunde_von + '.–' + b.stunde_bis + '. Std' + (b.zweck ? ' · ' + b.zweck : ''))
                 ),
-                e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : (b.status === 'zurueck' ? 'frei' : 'reserviert')) }, statusLabel(b.status))
+                e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : (b.status === 'zurueck' ? 'frei' : 'reserviert')) }, statusLabel(b.status)),
+                // Feedback #9 (Stresstest 09.07.): Reservierung wieder stornieren können
+                b.status === 'reserviert' && e('button', {
+                  className: 'storno-btn',
+                  'data-testid': 'buchung-storno',
+                  title: 'Reservierung stornieren',
+                  'aria-label': 'Reservierung stornieren',
+                  onClick: function () {
+                    if (!window.confirm('Reservierung „' + (k.bezeichnung || ('Koffer #' + b.koffer_id)) + '" am ' + b.datum + ' wirklich stornieren?')) return;
+                    ds.stornoBuchung(b.id)
+                      .then(function () {
+                        showToast('Reservierung storniert.', 'success');
+                        reload();
+                        if (props.onChange) props.onChange();
+                      })
+                      .catch(function (err) { showToast(errMsg(err), 'error'); });
+                  }
+                }, '✕ Stornieren')
               );
             })
       );
@@ -825,6 +873,8 @@
           var d = new DataService(client, null);
           setDs(d);
           if (session && session.user) {
+            // S2: Lehrer-Anzeige-Liste serverseitig laden (fire-and-forget)
+            refreshLehrerFromDb(client);
             // App-User-Identität aus public.users (über E-Mail) holen
             client.from('users').select('id, display_name, kuerzel, role, avatar_color').eq('email', session.user.email).maybeSingle()
               .then(function (ur) {
