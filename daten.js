@@ -31,15 +31,17 @@ window.KRS_MEDIEN = {
   ],
 
   // ── Lehrkräfte (für Wand-Etiketten mit Lehrer-Code L-<Kürzel>) ──
-  // In Produktiv kommt die Liste aus public.users; hier die bekannte KRS-Liste.
+  // S2 (2026-07-03): Klarnamen entfernt (DSGVO) — dies ist NUR die
+  // anonyme Demo-/Platzhalter-Liste. Produktiv:
+  //  · App (index.html): Lehrer-Codes werden serverseitig aufgelöst
+  //    (rpc_station_checkout); die Anzeige-Liste kommt nach Login aus
+  //    der SECURITY-DEFINER-RPC get_kollegium_public() (public.users).
+  //  · Etiketten-Druck (etiketten.html): echte Liste lokal über die
+  //    NICHT eingecheckte Datei daten.local.js (siehe .gitignore).
   LEHRER: [
-    { kuerzel: 'Ko',  name: 'Kotzan' },   { kuerzel: 'Ca',  name: 'Carse' },
-    { kuerzel: 'Sch', name: 'Schmitt' },  { kuerzel: 'Jo',  name: 'Joos' },
-    { kuerzel: 'Ja',  name: 'Jacob' },    { kuerzel: 'Sp',  name: 'Spingel' },
-    { kuerzel: 'Ma',  name: 'Martinez' }, { kuerzel: 'PSch', name: 'Schmitt P.' },
-    { kuerzel: 'Scha', name: 'Scharmann' }, { kuerzel: 'We', name: 'Weber' },
-    { kuerzel: 'Ge',  name: 'Gehrig' },   { kuerzel: 'Fi',  name: 'Fischer' },
-    { kuerzel: 'Mue', name: 'Müller' },   { kuerzel: 'Ap',  name: 'Appel' }
+    { kuerzel: 'Ko', name: 'Demo-Admin' },  { kuerzel: 'L2', name: 'Lehrkraft B' },
+    { kuerzel: 'L3', name: 'Lehrkraft C' }, { kuerzel: 'L4', name: 'Lehrkraft D' },
+    { kuerzel: 'L5', name: 'Lehrkraft E' }, { kuerzel: 'L6', name: 'Lehrkraft F' }
   ],
 
   // ── Aktions- und Slot-Barcodes (hängen an der Wand) ──

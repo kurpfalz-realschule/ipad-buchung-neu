@@ -95,6 +95,14 @@
     .field-row { display: flex; gap: 10px; }
     .field-row .field { flex: 1; }
 
+    /* S1: Modus-Umschalter Pool/Konkret (Reservieren) */
+    .modus-switch { display: flex; gap: 6px; background: var(--bg-tertiary); border-radius: var(--radius-sm); padding: 4px; }
+    .modus-btn {
+      flex: 1; min-height: 44px; border: none; border-radius: 6px; background: none;
+      font-size: 13px; font-weight: 600; color: var(--text-muted); transition: background 0.15s, color 0.15s;
+    }
+    .modus-btn.active { background: var(--bg-card); color: var(--primary-dark); box-shadow: var(--shadow); }
+
     .btn {
       width: 100%; min-height: 46px; border: none; border-radius: var(--radius-sm);
       font-size: 15px; font-weight: 600; background: var(--primary); color: #fff;
@@ -202,7 +210,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.1.0'; // 10.07.2026: Storno-Button in „Meine Buchungen" (Feedback Stresstest)
+    window.KRS_BUCHUNG_VERSION = '1.2.0'; // 31.07.2026: Neu: Mehrere Koffer auf einmal reservieren — ohne Festlegung auf Farben (Pool-/Mengen-Reservierung)
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -400,6 +408,88 @@
       }).then(function (r) { if (r.error) throw r.error; return r.data; });
     };
 
+    // ── S1/S2 (31.07.2026): Pool-/Mengen-Reservierung ──────────────
+    // "3 iPad-Koffer, Di 1.–2. Std, Standort LZ — egal welche Farben."
+    // Kapazitätsprüfung „noch X frei" (Live-Anzeige im Formular, debounced).
+    // Demo-Formel (1:1 Spiegel der Server-Logik, siehe Sprint-Datei):
+    //   frei(h) = bestand − belegt_konkret(h) − belegt_pool(h)  (min. 0)
+    //   bestand        = aktive Koffer mit typ+standort
+    //   belegt_konkret = Koffer aus dem Pool mit aktiver Konkret-Buchung/Ausgabe in h
+    //   belegt_pool    = Summe anzahl aktiver Pool-Buchungen desselben Pools in h
+    //   aktiv = status in ('reserviert','ausgegeben')
+    DataService.prototype.checkKapazitaetPool = function (typ, standort, datum, von, bis, excludeBuchungId) {
+      var self = this;
+      if (this.isDemo) {
+        var pool = self._koffer.filter(function (k) { return k.aktiv && k.typ === typ && k.standort === standort; });
+        var bestand = pool.length;
+        var poolIds = {};
+        pool.forEach(function (k) { poolIds[k.id] = true; });
+        var today = todayISO();
+        var proStunde = [], minFrei = Infinity, engpass = von;
+        for (var h = von; h <= bis; h++) {
+          var belegtKofferIds = {};
+          self._buchungen.forEach(function (b) {
+            if (excludeBuchungId != null && b.id === excludeBuchungId) return;
+            if (b.koffer_id == null) return; // Pool-Buchung, hier nicht relevant
+            if (!poolIds[b.koffer_id]) return;
+            if (b.datum !== datum) return;
+            if (b.status !== 'reserviert' && b.status !== 'ausgegeben') return;
+            if (b.stunde_von <= h && b.stunde_bis >= h) belegtKofferIds[b.koffer_id] = true;
+          });
+          var belegtKonkret = Object.keys(belegtKofferIds).length;
+          var belegtPool = 0;
+          self._buchungen.forEach(function (b) {
+            if (excludeBuchungId != null && b.id === excludeBuchungId) return;
+            if (b.koffer_id != null) return; // Konkret-Buchung, hier nicht relevant
+            if (b.pool_typ !== typ || b.pool_standort !== standort) return;
+            if (b.datum !== datum) return;
+            if (b.status !== 'reserviert' && b.status !== 'ausgegeben') return;
+            if (b.stunde_von <= h && b.stunde_bis >= h) belegtPool += (b.anzahl || 1);
+          });
+          var frei = Math.max(0, bestand - belegtKonkret - belegtPool);
+          proStunde.push({ stunde: h, bestand: bestand, belegt_konkret: belegtKonkret, belegt_pool: belegtPool, frei: frei });
+          if (frei < minFrei) { minFrei = frei; engpass = h; }
+        }
+        if (!isFinite(minFrei)) minFrei = bestand;
+        return Promise.resolve({ typ: typ, standort: standort, datum: datum, von: von, bis: bis, bestand: bestand, frei: minFrei, engpass_stunde: engpass, pro_stunde: proStunde });
+      }
+      return this.sb.rpc('rpc_check_kapazitaet_pool', {
+        p_typ: typ, p_standort: standort, p_datum: datum, p_von: von, p_bis: bis,
+        p_exclude_buchung_id: excludeBuchungId || null
+      }).then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+
+    // ── Pool-Reservierung anlegen (atomar auf dem Server) ──────────
+    DataService.prototype.reservierePool = function (payload) {
+      var self = this;
+      if (this.isDemo) {
+        if (!payload.pool_typ || !payload.pool_standort) return Promise.reject(makeErr('invalid_pool'));
+        if (!payload.anzahl || payload.anzahl < 1) return Promise.reject(makeErr('invalid_anzahl'));
+        if (payload.stunde_bis < payload.stunde_von) return Promise.reject(makeErr('invalid_range'));
+        return this.checkKapazitaetPool(payload.pool_typ, payload.pool_standort, payload.datum, payload.stunde_von, payload.stunde_bis)
+          .then(function (info) {
+            if (!info.bestand) throw makeErr('pool_leer', payload.pool_typ + '/' + payload.pool_standort);
+            if (payload.anzahl > info.frei) {
+              throw makeErr('pool_kapazitaet_belegt', 'Nur noch ' + info.frei + ' von ' + payload.anzahl + ' Koffern frei in Stunde ' + info.engpass_stunde);
+            }
+            var row = {
+              id: ++self._seq, koffer_id: null,
+              user_id: (self.user && self.user.id) || 0,
+              datum: payload.datum, stunde_von: payload.stunde_von, stunde_bis: payload.stunde_bis,
+              status: 'reserviert', zweck: payload.zweck || '',
+              anzahl: payload.anzahl, pool_typ: payload.pool_typ, pool_standort: payload.pool_standort,
+              created_at: new Date().toISOString()
+            };
+            self._buchungen.push(row);
+            return row;
+          });
+      }
+      return this.sb.rpc('rpc_reserviere_pool', {
+        p_typ: payload.pool_typ, p_standort: payload.pool_standort, p_datum: payload.datum,
+        p_von: payload.stunde_von, p_bis: payload.stunde_bis, p_anzahl: payload.anzahl, p_zweck: payload.zweck || null
+      }).then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+
     // ── Stornieren ──
     DataService.prototype.stornoBuchung = function (id) {
       if (this.isDemo) {
@@ -501,11 +591,33 @@
             var err = makeErr(frei === 0 ? 'alles_belegt' : 'kapazitaet_belegt', barcode);
             err.frei = frei; return reject(err);
           }
-          var buchung = { id: ++self._seq, koffer_id: k.id, user_id: lehrer.id, datum: today,
-            stunde_von: range.von, stunde_bis: range.bis, status: 'ausgegeben', zweck: lehrer.kuerzel, created_at: now.toISOString() };
-          self._buchungen.push(buchung);
+          // S3 (31.07.2026): eigene, passende Pool-Reservierung des Lehrers finden
+          // (heute, Zeitfenster überlappt, Typ+Standort passen zum Koffer, noch
+          // nicht voll abgeholt) — Ausgabe damit verknüpfen statt neu anzulegen.
+          // Ohne Treffer: exakt das bisherige Verhalten (Spontan-Scan).
+          var poolMatch = self._buchungen.find(function (b) {
+            return b.koffer_id == null && b.user_id === lehrer.id && b.datum === today &&
+              (b.status === 'reserviert' || b.status === 'ausgegeben') &&
+              b.pool_typ === k.typ && b.pool_standort === k.standort &&
+              b.stunde_von <= range.bis && b.stunde_bis >= range.von &&
+              poolAbgeholtCount(self, b.id) < b.anzahl;
+          });
+          var buchung;
+          if (poolMatch) {
+            buchung = poolMatch;
+            buchung.status = 'ausgegeben';
+          } else {
+            buchung = { id: ++self._seq, koffer_id: k.id, user_id: lehrer.id, datum: today,
+              stunde_von: range.von, stunde_bis: range.bis, status: 'ausgegeben', zweck: lehrer.kuerzel, created_at: now.toISOString() };
+            self._buchungen.push(buchung);
+          }
           self._ausgaben.push({ id: ++self._seq, koffer_id: k.id, buchung_id: buchung.id, user_id: lehrer.id, aktion: 'checkout', ts: now.toISOString(), idempotency_key: idempotencyKey });
-          resolve({ koffer: k, lehrer: lehrer, range: range });
+          var poolInfo = null;
+          if (poolMatch) {
+            var abgeholt = poolAbgeholtCount(self, buchung.id);
+            poolInfo = { buchung_id: buchung.id, typ: buchung.pool_typ, standort: buchung.pool_standort, anzahl: buchung.anzahl, abgeholt: abgeholt, offen: buchung.anzahl - abgeholt };
+          }
+          resolve({ koffer: k, lehrer: lehrer, range: range, buchung_id: buchung.id, pool: poolInfo });
         });
       }
       return this.sb.rpc('rpc_station_checkout', {
@@ -525,7 +637,12 @@
           self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.ts > last.ts)) last = a; });
           if (!last || last.aktion !== 'checkout') return reject(makeErr('not_checked_out', barcode));
           self._ausgaben.push({ id: ++self._seq, koffer_id: k.id, buchung_id: last.buchung_id, user_id: last.user_id, aktion: 'return', ts: new Date().toISOString(), idempotency_key: idempotencyKey });
-          var b = self._buchungen.find(function (x) { return x.id === last.buchung_id; }); if (b) b.status = 'zurueck';
+          var b = self._buchungen.find(function (x) { return x.id === last.buchung_id; });
+          if (b) {
+            // Pool-Buchung: erst "zurueck", wenn ALLE abgeholten Koffer zurück sind
+            if (b.koffer_id == null) { if (poolAbgeholtCount(self, b.id) === 0) b.status = 'zurueck'; }
+            else b.status = 'zurueck';
+          }
           resolve({ koffer: k });
         });
       }
@@ -542,10 +659,31 @@
 
     function makeErr(code, detail) { var err = new Error(code + (detail ? ':' + detail : '')); err.code = code; return err; }
 
+    // Wie viele physische Koffer sind unter einer (Pool-)Buchung gerade abgeholt
+    // (letztes Ereignis je Koffer = checkout)? Demo-Spiegel von "abgeholt" im
+    // rpc_station_checkout-Rückgabeobjekt.
+    function poolAbgeholtCount(ds, buchungId) {
+      var lastByKoffer = {};
+      ds._ausgaben.forEach(function (a) {
+        if (a.buchung_id !== buchungId) return;
+        if (!lastByKoffer[a.koffer_id] || a.ts > lastByKoffer[a.koffer_id].ts) lastByKoffer[a.koffer_id] = a;
+      });
+      var n = 0;
+      Object.keys(lastByKoffer).forEach(function (kid) { if (lastByKoffer[kid].aktion === 'checkout') n++; });
+      return n;
+    }
+
     // Fehlercode → deutsche Meldung
+    // S2 (Pool-Reservierung): rpc_reserviere_pool/rpc_check_kapazitaet_pool liefern
+    // Codes im Format "code:Klartext" (z. B. "pool_kapazitaet_belegt:Nur noch 2 von
+    // 3 Koffern frei in Stunde 4") — Klartext hinter dem ersten ":" wird direkt
+    // angezeigt. err.code (falls gesetzt) enthält nie den Klartext, deshalb hier
+    // bevorzugt err.message auswerten, wenn diese einen ":" enthält.
     function errMsg(err) {
-      var raw = (err && (err.code || err.message)) || '';
+      var hasDetail = err && err.message && err.message.indexOf(':') !== -1;
+      var raw = hasDetail ? err.message : ((err && (err.code || err.message)) || '');
       var code = String(raw).split(':')[0];
+      var detail = String(raw).split(':').slice(1).join(':').trim();
       var map = {
         koffer_not_found: 'Barcode nicht gefunden.',
         koffer_inactive: 'Dieser Koffer ist außer Betrieb.',
@@ -554,8 +692,13 @@
         not_authenticated: 'Bitte zuerst anmelden.',
         kapazitaet_belegt: 'Dieser Koffer ist in dieser Stunde belegt.',
         alles_belegt: 'Alle Koffer sind in dieser Stunde belegt!',
-        lehrer_unbekannt: 'Lehrer-Code nicht erkannt.'
+        lehrer_unbekannt: 'Lehrer-Code nicht erkannt.',
+        pool_leer: 'Für diese Auswahl sind keine Geräte erfasst.',
+        invalid_anzahl: 'Bitte eine gültige Anzahl angeben.',
+        invalid_range: '„Bis"-Stunde muss ≥ „Von"-Stunde sein.',
+        invalid_pool: 'Bitte Gerätetyp und Standort wählen.'
       };
+      if (code === 'pool_kapazitaet_belegt') return detail || 'Nicht mehr genug Geräte frei.';
       return map[code] || ('Fehler: ' + (err && err.message ? err.message : 'unbekannt'));
     }
 
@@ -633,6 +776,13 @@
       var [bis, setBis] = useState(2);
       var [zweck, setZweck] = useState('');
       var [saving, setSaving] = useState(false);
+      // S1 (31.07.2026): Modus-Umschalter Pool (Anzahl, egal welcher Koffer) vs.
+      // Konkret (bestimmter Koffer, bisheriges Verhalten unverändert). Default: Pool.
+      var [modus, setModus] = useState('pool');
+      var [poolTyp, setPoolTyp] = useState('ipad_koffer');
+      var [poolStandort, setPoolStandort] = useState('LZ');
+      var [poolAnzahl, setPoolAnzahl] = useState(1);
+      var [kapaInfo, setKapaInfo] = useState(null);
 
       var reload = useCallback(function () {
         ds.getKoffer().then(function (ks) {
@@ -644,7 +794,19 @@
       }, [ds]);
       useEffect(reload, [reload, props.refreshKey]);
 
-      var submit = useCallback(function () {
+      // Live-Anzeige „noch X frei" — debounced bei Feldänderung (Pool-Modus).
+      useEffect(function () {
+        if (modus !== 'pool') { setKapaInfo(null); return; }
+        var cancelled = false;
+        var timer = setTimeout(function () {
+          ds.checkKapazitaetPool(poolTyp, poolStandort, datum, Number(von), Number(bis))
+            .then(function (info) { if (!cancelled) setKapaInfo(info); })
+            .catch(function () { if (!cancelled) setKapaInfo(null); });
+        }, 300);
+        return function () { cancelled = true; clearTimeout(timer); };
+      }, [ds, modus, poolTyp, poolStandort, datum, von, bis, props.refreshKey]);
+
+      var submitKonkret = useCallback(function () {
         if (!kofferId) { showToast('Bitte einen Koffer wählen.', 'error'); return; }
         if (bis < von) { showToast('„Bis"-Stunde muss ≥ „Von"-Stunde sein.', 'error'); return; }
         setSaving(true);
@@ -659,10 +821,65 @@
           .then(function () { setSaving(false); });
       }, [ds, kofferId, datum, von, bis, zweck, reload, props]);
 
+      var submitPool = useCallback(function () {
+        if (!poolTyp || !poolStandort) { showToast('Bitte Gerätetyp und Standort wählen.', 'error'); return; }
+        if (bis < von) { showToast('„Bis"-Stunde muss ≥ „Von"-Stunde sein.', 'error'); return; }
+        if (!poolAnzahl || poolAnzahl < 1) { showToast('Bitte eine gültige Anzahl angeben.', 'error'); return; }
+        setSaving(true);
+        ds.reservierePool({ pool_typ: poolTyp, pool_standort: poolStandort, datum: datum, stunde_von: Number(von), stunde_bis: Number(bis), anzahl: Number(poolAnzahl), zweck: zweck })
+          .then(function () {
+            showToast('Reservierung gespeichert.', 'success');
+            setZweck('');
+            reload();
+            if (props.onChange) props.onChange();
+          })
+          .catch(function (err) { showToast(errMsg(err), 'error'); })
+          .then(function () { setSaving(false); });
+      }, [ds, poolTyp, poolStandort, poolAnzahl, datum, von, bis, zweck, reload, props]);
+
+      var submit = modus === 'pool' ? submitPool : submitKonkret;
+
       return e('div', { 'data-testid': 'reservieren-view' },
         e('div', { className: 'section-title' }, 'Neue Reservierung'),
         e('div', { className: 'card' },
           e('div', { className: 'field' },
+            e('label', null, 'Modus'),
+            e('div', { className: 'modus-switch', role: 'tablist', 'aria-label': 'Reservierungs-Modus' },
+              e('button', {
+                type: 'button', role: 'tab', 'aria-selected': modus === 'pool',
+                className: 'modus-btn' + (modus === 'pool' ? ' active' : ''),
+                'data-testid': 'res-modus-pool', onClick: function () { setModus('pool'); }
+              }, 'Anzahl (Pool)'),
+              e('button', {
+                type: 'button', role: 'tab', 'aria-selected': modus === 'konkret',
+                className: 'modus-btn' + (modus === 'konkret' ? ' active' : ''),
+                'data-testid': 'res-modus-konkret', onClick: function () { setModus('konkret'); }
+              }, 'Bestimmter Koffer')
+            )
+          ),
+          modus === 'pool' ? e(React.Fragment, null,
+            e('div', { className: 'field' },
+              e('label', null, 'Gerätetyp'),
+              e('select', { value: poolTyp, onChange: function (ev) { setPoolTyp(ev.target.value); }, 'data-testid': 'res-pool-typ' },
+                e('option', { value: 'ipad_koffer' }, 'iPad-Koffer'),
+                e('option', { value: 'laptop_koffer' }, 'Laptop-Koffer')
+              )
+            ),
+            e('div', { className: 'field' },
+              e('label', null, 'Standort'),
+              e('select', { value: poolStandort, onChange: function (ev) { setPoolStandort(ev.target.value); }, 'data-testid': 'res-pool-standort' },
+                e('option', { value: 'LZ' }, 'Lernzentrum (LZ)'),
+                e('option', { value: '1OG' }, '1. OG')
+              )
+            ),
+            e('div', { className: 'field' },
+              e('label', null, 'Anzahl'),
+              e('input', {
+                type: 'number', min: 1, step: 1, value: poolAnzahl, 'data-testid': 'res-pool-anzahl',
+                onChange: function (ev) { setPoolAnzahl(Math.max(1, Number(ev.target.value) || 1)); }
+              })
+            )
+          ) : e('div', { className: 'field' },
             e('label', null, 'Koffer / Gerät'),
             e('select', { value: kofferId, onChange: function (ev) { setKofferId(ev.target.value); }, 'data-testid': 'res-koffer' },
               koffer.length === 0 ? e('option', { value: '' }, '— kein aktiver Koffer —') :
@@ -685,6 +902,9 @@
                 STUNDEN.map(function (s) { return e('option', { key: s, value: s }, s + '. Stunde'); }))
             )
           ),
+          modus === 'pool' && kapaInfo && e('div', {
+            className: 'inline-note' + (kapaInfo.bestand === 0 ? ' warn' : ''), 'data-testid': 'res-kapa-info'
+          }, kapaInfo.bestand === 0 ? 'Für diese Auswahl sind keine Geräte erfasst.' : ('noch ' + kapaInfo.frei + ' frei')),
           e('div', { className: 'field' },
             e('label', null, 'Zweck (Klasse / Fach)'),
             e('input', { type: 'text', value: zweck, placeholder: 'z. B. 8a Musik', onChange: function (ev) { setZweck(ev.target.value); }, 'data-testid': 'res-zweck' })
@@ -695,11 +915,15 @@
         buchungen.length === 0
           ? e('div', { className: 'empty' }, e('div', { className: 'empty-icon' }, '🗓️'), e('p', null, 'Noch keine Reservierung.'))
           : buchungen.map(function (b) {
+              var isPool = b.koffer_id == null;
               var k = b.koffer || {};
+              var mainLabel = isPool
+                ? ((b.anzahl || 1) + '× ' + poolTypLabel(b.pool_typ) + ' · ' + poolStandortLabel(b.pool_standort))
+                : (k.bezeichnung || ('Koffer #' + b.koffer_id));
               return e('div', { key: b.id, className: 'buchung-item', 'data-testid': 'buchung-item' },
                 e('div', { className: 'koffer-icon' }, '🗓️'),
                 e('div', { className: 'koffer-main' },
-                  e('div', { className: 'name' }, k.bezeichnung || ('Koffer #' + b.koffer_id)),
+                  e('div', { className: 'name' }, mainLabel),
                   e('div', { className: 'meta' }, b.datum + ' · ' + b.stunde_von + '.–' + b.stunde_bis + '. Std' + (b.zweck ? ' · ' + b.zweck : ''))
                 ),
                 e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : (b.status === 'zurueck' ? 'frei' : 'reserviert')) }, statusLabel(b.status)),
@@ -710,7 +934,7 @@
                   title: 'Reservierung stornieren',
                   'aria-label': 'Reservierung stornieren',
                   onClick: function () {
-                    if (!window.confirm('Reservierung „' + (k.bezeichnung || ('Koffer #' + b.koffer_id)) + '" am ' + b.datum + ' wirklich stornieren?')) return;
+                    if (!window.confirm('Reservierung „' + mainLabel + '" am ' + b.datum + ' wirklich stornieren?')) return;
                     ds.stornoBuchung(b.id)
                       .then(function () {
                         showToast('Reservierung storniert.', 'success');
@@ -725,6 +949,8 @@
       );
     }
     function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück' })[s] || s; }
+    function poolTypLabel(t) { return ({ ipad_koffer: 'iPad-Koffer', laptop_koffer: 'Laptop-Koffer' })[t] || t || 'Gerät'; }
+    function poolStandortLabel(s) { return ({ LZ: 'LZ', '1OG': '1. OG' })[s] || s || '—'; }
 
     // ── Wand-Station (Kiosk): Lehrercode → (Slot) → Koffer = Ausbuchen;
     //    Rückgabe-Code → Koffer = Rückgabe. Ein USB/BT-Scanner tippt den Code
@@ -748,7 +974,13 @@
         ds.stationCheckout(lehrerCode, barcode, range, uuid()).then(function (res) {
           var name = (res.lehrer && res.lehrer.display_name) || (st.current.lehrer && st.current.lehrer.display_name) || lehrerCode;
           var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
-          setResult({ ok: true, title: 'Ausgegeben', text: kname + ' → ' + name + ' · ' + range.label });
+          var text = kname + ' → ' + name + ' · ' + range.label;
+          // S3 (31.07.2026): Scan verknüpft mit eigener Pool-Reservierung → Hinweis,
+          // kein Zwang (Scan bleibt bei Pool-Buchungen weiterhin freiwillig).
+          if (res.pool) {
+            text += ' · ✓ auf deine Reservierung gebucht — ' + res.pool.abgeholt + ' von ' + res.pool.anzahl + ' abgeholt';
+          }
+          setResult({ ok: true, title: 'Ausgegeben', text: text });
           showToast('Ausgegeben: ' + kname, 'success');
           reset(true); if (props.onChange) props.onChange();
         }).catch(function (err) {
