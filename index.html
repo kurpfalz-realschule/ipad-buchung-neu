@@ -132,6 +132,7 @@
     .status-pill.ausgegeben { background: var(--warning-bg); color: var(--warning); }
     .status-pill.inaktiv { background: var(--danger-bg); color: var(--danger); }
     .status-pill.reserviert { background: #ede9fe; color: var(--primary-dark); }
+    .status-pill.abgelaufen { background: var(--bg-tertiary); color: var(--text-muted); }
     /* Feedback #9: Storno-Button in „Meine Buchungen" */
     .storno-btn {
       flex: none; min-height: 44px; padding: 8px 12px;
@@ -170,6 +171,32 @@
     .big-status .big-text { font-size: 15px; font-weight: 600; margin-top: 4px; }
 
     .mode-banner { font-size: 11px; text-align: center; padding: 4px; color: var(--text-muted); background: var(--bg-tertiary); }
+
+    /* ── S1: Auslastungs-Ansicht ── */
+    .zeitraum-switch { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .zeitraum-btn { flex: 1; min-width: 110px; min-height: 40px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--bg-card); color: var(--text-muted); font-size: 12px; font-weight: 600; }
+    .zeitraum-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
+    .stat-card .stat-label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .3px; }
+    .stat-card .stat-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .stat-card .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .stat-card .stat-value.na { font-size: 14px; color: var(--text-muted); font-weight: 600; }
+    .heatmap-wrap { overflow-x: auto; }
+    .heatmap-grid { display: grid; grid-template-columns: 32px repeat(5, 1fr); gap: 3px; min-width: 260px; }
+    .heatmap-grid .hm-head { font-size: 10px; color: var(--text-muted); text-align: center; font-weight: 700; padding: 2px 0; }
+    .heatmap-grid .hm-row-label { font-size: 10px; color: var(--text-muted); display: flex; align-items: center; justify-content: center; }
+    .heatmap-cell { aspect-ratio: 1.4; border-radius: 4px; display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; color: #fff; min-height: 26px; }
+    .heatmap-cell.na { background: var(--bg-tertiary); color: var(--text-muted); font-weight: 400; }
+    .verlauf-chart { display: flex; align-items: flex-end; gap: 6px; height: 90px; padding-top: 8px; }
+    .verlauf-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+    .verlauf-bar { width: 100%; background: var(--primary); border-radius: 3px 3px 0 0; min-height: 2px; }
+    .verlauf-label { font-size: 9px; color: var(--text-muted); white-space: nowrap; }
+    .hinweis-card { background: #fff7ed; border: 1px solid var(--warning); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; font-size: 13px; }
+    .pool-heading { font-size: 13px; font-weight: 700; margin: 14px 0 8px; }
+
     @media (max-width: 480px) {
       .header-titles p { display: none; }
       .user-chip span { display: none; }
@@ -184,6 +211,7 @@
   <div id="root"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="daten.js"></script>
@@ -210,7 +238,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.2.0'; // 31.07.2026: Neu: Mehrere Koffer auf einmal reservieren — ohne Festlegung auf Farben (Pool-/Mengen-Reservierung)
+    window.KRS_BUCHUNG_VERSION = '1.3.0'; // 19.09.2026: Auslastungsstatistik (Admin), Kamera-Scan an der Station, Stundenraster aus der DB, Status 'abgelaufen', Etiketten mit QR
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -225,6 +253,21 @@
     function uuid() {
       if (crypto && crypto.randomUUID) return crypto.randomUUID();
       return 'k-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+    }
+
+    // S4 (19.09.2026): Stundenraster kommt ab jetzt aus der DB-Tabelle
+    // 'stundenraster' (Wahrheit), daten.js/STUNDEN bleibt nur Rueckfall,
+    // falls der Abruf beim Start scheitert. Einmal geladen, im Modul-Cache
+    // gehalten (nicht bei jedem Rendern neu abgefragt).
+    var STUNDENRASTER_CACHE = { rows: null, fehler: false };
+    function stundenListe(raster) {
+      if (raster && raster.length) return raster.map(function (r) { return r.stunde; }).sort(function (a, b) { return a - b; });
+      return STUNDEN;
+    }
+    function istBuchbar(raster, stunde) {
+      if (!raster || !raster.length) return true; // Rueckfall daten.js kennt keine Sperre
+      var r = raster.find(function (x) { return x.stunde === stunde; });
+      return r ? r.buchbar !== false : true;
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -309,6 +352,24 @@
         .catch(function () { return 0; });
     };
 
+    // S4 (19.09.2026): Stundenraster aus der DB. Demo-Modus liefert null
+    // (Rueckfall auf daten.js bleibt aktiv) -- im Demo gibt es keine Tabelle.
+    DataService.prototype.getStundenraster = function () {
+      if (this.isDemo) return Promise.resolve(null);
+      return this.sb.from('stundenraster').select('*').order('stunde')
+        .then(function (r) { if (r.error) throw r.error; return r.data || null; });
+    };
+
+    // S1 (19.09.2026): Auslastungsstatistik -- ausschliesslich ueber den
+    // Aggregat-RPC (Vertraege fuer Sonnet). Keine rohen SELECTs auf buchungen.
+    // Demo-Modus: 1:1-Spiegel der dokumentierten Server-Logik (Kontext 13),
+    // damit Tab und Tests auch ohne Supabase-Session pruefbar sind.
+    DataService.prototype.getAuslastung = function (von, bis) {
+      if (this.isDemo) return Promise.resolve(demoAuslastung(this, von, bis));
+      return this.sb.rpc('rpc_auslastung', { p_von: von, p_bis: bis })
+        .then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+
     // ── Koffer-Bestand ──
     DataService.prototype.getKoffer = function () {
       if (this.isDemo) return Promise.resolve(this._koffer.slice());
@@ -322,7 +383,7 @@
         var open = {};
         var byKoffer = {};
         this._ausgaben.forEach(function (a) {
-          if (!byKoffer[a.koffer_id] || a.ts > byKoffer[a.koffer_id].ts) byKoffer[a.koffer_id] = a;
+          if (!byKoffer[a.koffer_id] || a.id > byKoffer[a.koffer_id].id) byKoffer[a.koffer_id] = a;
         });
         var self = this, now = new Date();
         Object.keys(byKoffer).forEach(function (kid) {
@@ -514,7 +575,7 @@
           if (!k.aktiv) return reject(makeErr('koffer_inactive', barcode));
           // bereits offen ausgegeben?
           var last = null;
-          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.ts > last.ts)) last = a; });
+          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.id > last.id)) last = a; });
           if (last && last.aktion === 'checkout') return reject(makeErr('already_checked_out', barcode));
           var row = { id: ++self._seq, koffer_id: k.id, buchung_id: buchungId || null,
             user_id: (self.user && self.user.id) || 0, aktion: 'checkout', ts: new Date().toISOString(),
@@ -538,7 +599,7 @@
           var k = self._koffer.find(function (x) { return x.barcode === barcode; });
           if (!k) return reject(makeErr('koffer_not_found', barcode));
           var last = null;
-          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.ts > last.ts)) last = a; });
+          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.id > last.id)) last = a; });
           if (!last || last.aktion !== 'checkout') return reject(makeErr('not_checked_out', barcode));
           var row = { id: ++self._seq, koffer_id: k.id, buchung_id: last.buchung_id || null,
             user_id: (self.user && self.user.id) || 0, aktion: 'return', ts: new Date().toISOString(),
@@ -571,11 +632,29 @@
       var self = this;
       if (this.isDemo) {
         return new Promise(function (resolve, reject) {
+          // Idempotenz zuerst pruefen (wie bei checkout()/returnKoffer()):
+          // gleicher Key -> gleiche Antwort, KEINE zweite ausgaben-Zeile.
+          var vorher = self._ausgaben.find(function (a) { return a.idempotency_key === idempotencyKey; });
+          if (vorher) {
+            var kVorher = self._koffer.find(function (x) { return x.id === vorher.koffer_id; });
+            var bVorher = vorher.buchung_id ? self._buchungen.find(function (x) { return x.id === vorher.buchung_id; }) : null;
+            var poolVorher = null;
+            if (bVorher && bVorher.koffer_id == null) {
+              var abgeholtVorher = poolAbgeholtCount(self, bVorher.id);
+              poolVorher = { buchung_id: bVorher.id, typ: bVorher.pool_typ, standort: bVorher.pool_standort, anzahl: bVorher.anzahl, abgeholt: abgeholtVorher, offen: bVorher.anzahl - abgeholtVorher };
+            }
+            return resolve({ koffer: kVorher, lehrer: LEHRER_BY_CODE[(lehrerCode || '').toUpperCase()], range: range, buchung_id: vorher.buchung_id, pool: poolVorher, idempotent: true });
+          }
           var lehrer = LEHRER_BY_CODE[(lehrerCode || '').toUpperCase()];
           if (!lehrer) return reject(makeErr('lehrer_unbekannt', lehrerCode));
           var k = self._koffer.find(function (x) { return x.barcode === barcode; });
           if (!k) return reject(makeErr('koffer_not_found', barcode));
           if (!k.aktiv) return reject(makeErr('koffer_inactive', barcode));
+          // Bereits ausgebucht: letztes Ausgabe-Ereignis fuer diesen Koffer ist ein offener Checkout
+          // (spiegelt die dokumentierte Backend-Pruefung, zeitfensterunabhaengig - siehe KONTEXT.md 4.1 / S3).
+          var lastAusgabe = null;
+          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!lastAusgabe || a.id > lastAusgabe.id)) lastAusgabe = a; });
+          if (lastAusgabe && lastAusgabe.aktion === 'checkout') return reject(makeErr('already_checked_out', barcode));
           var today = todayISO(), now = new Date();
           // Konflikt: aktive Buchung auf diesem Koffer, die das Fenster überlappt
           var belegt = self._buchungen.some(function (b) {
@@ -631,10 +710,15 @@
       var self = this;
       if (this.isDemo) {
         return new Promise(function (resolve, reject) {
+          var vorher = self._ausgaben.find(function (a) { return a.idempotency_key === idempotencyKey; });
+          if (vorher) {
+            var kVorher = self._koffer.find(function (x) { return x.id === vorher.koffer_id; });
+            return resolve({ koffer: kVorher, idempotent: true });
+          }
           var k = self._koffer.find(function (x) { return x.barcode === barcode; });
           if (!k) return reject(makeErr('koffer_not_found', barcode));
           var last = null;
-          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.ts > last.ts)) last = a; });
+          self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.id > last.id)) last = a; });
           if (!last || last.aktion !== 'checkout') return reject(makeErr('not_checked_out', barcode));
           self._ausgaben.push({ id: ++self._seq, koffer_id: k.id, buchung_id: last.buchung_id, user_id: last.user_id, aktion: 'return', ts: new Date().toISOString(), idempotency_key: idempotencyKey });
           var b = self._buchungen.find(function (x) { return x.id === last.buchung_id; });
@@ -666,11 +750,141 @@
       var lastByKoffer = {};
       ds._ausgaben.forEach(function (a) {
         if (a.buchung_id !== buchungId) return;
-        if (!lastByKoffer[a.koffer_id] || a.ts > lastByKoffer[a.koffer_id].ts) lastByKoffer[a.koffer_id] = a;
+        if (!lastByKoffer[a.koffer_id] || a.id > lastByKoffer[a.koffer_id].id) lastByKoffer[a.koffer_id] = a;
       });
       var n = 0;
       Object.keys(lastByKoffer).forEach(function (kid) { if (lastByKoffer[kid].aktion === 'checkout') n++; });
       return n;
+    }
+
+    // S1 (19.09.2026): Demo-Spiegel von rpc_auslastung -- siehe
+    // IPAD-BUCHUNG-KONTEXT.md Abschnitt 13 fuer die verbindlichen Definitionen.
+    // Fenster 1-6, Mindestgruppengroesse 5, Schultag = Mo-Fr ohne Ferienabzug.
+    var AUSLASTUNG_STUNDEN_VON = 1, AUSLASTUNG_STUNDEN_BIS = 6, AUSLASTUNG_MIN_N = 5;
+    function schultageZwischen(von, bis) {
+      var d = new Date(von + 'T00:00:00'), end = new Date(bis + 'T00:00:00'), n = 0;
+      while (d <= end) { var wd = d.getDay(); if (wd >= 1 && wd <= 5) n++; d.setDate(d.getDate() + 1); }
+      return n;
+    }
+    function isoWeek(dateStr) {
+      var d = new Date(dateStr + 'T00:00:00');
+      var day = (d.getDay() + 6) % 7; // Mo=0
+      d.setDate(d.getDate() - day + 3);
+      var firstThu = new Date(d.getFullYear(), 0, 4);
+      var diff = (d - firstThu) / 86400000;
+      var week = 1 + Math.round((diff - ((d.getDay() + 6) % 7)) / 7);
+      return d.getFullYear() + '-' + String(week).padStart(2, '0');
+    }
+    function median(arr) {
+      if (!arr.length) return null;
+      var s = arr.slice().sort(function (a, b) { return a - b; });
+      var mid = Math.floor(s.length / 2);
+      return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+    }
+    function demoAuslastung(ds, von, bis) {
+      var schultage = schultageZwischen(von, bis);
+      var aktiveKoffer = ds._koffer.filter(function (k) { return k.aktiv; });
+      var poolKeys = {};
+      aktiveKoffer.forEach(function (k) { poolKeys[k.typ + '||' + k.standort] = true; });
+      var buchungenImFenster = ds._buchungen.filter(function (b) { return b.datum >= von && b.datum <= bis; });
+
+      var pools = Object.keys(poolKeys).map(function (key) {
+        var parts = key.split('||'), typ = parts[0], standort = parts[1];
+        var bestand = aktiveKoffer.filter(function (k) { return k.typ === typ && k.standort === standort; }).length;
+        var geraete = aktiveKoffer.filter(function (k) { return k.typ === typ && k.standort === standort; })
+          .reduce(function (s, k) { return s + (k.kapazitaet || 1); }, 0);
+
+        var relevante = buchungenImFenster.filter(function (b) {
+          if (b.status === 'storniert' || b.status === 'abgelaufen') return false;
+          if (b.koffer_id == null) return b.pool_typ === typ && b.pool_standort === standort;
+          var k = aktiveKoffer.find(function (x) { return x.id === b.koffer_id; });
+          return k && k.typ === typ && k.standort === standort;
+        });
+
+        var heatmapZellen = [], gebuchteKofferstunden = 0, spitze = null, spitzeBelegt = -1;
+        for (var wt = 1; wt <= 5; wt++) {
+          for (var st = AUSLASTUNG_STUNDEN_VON; st <= AUSLASTUNG_STUNDEN_BIS; st++) {
+            // Alle Kalendertage im Zeitraum mit diesem Wochentag zaehlen
+            var belegSumme = 0, tageMitBeleg = 0, tageGesamt = 0, anzahlBuchungenZelle = 0;
+            var d = new Date(von + 'T00:00:00'), end = new Date(bis + 'T00:00:00');
+            while (d <= end) {
+              var isoWt = ((d.getDay() + 6) % 7) + 1; // Mo=1..So=7
+              if (isoWt === wt) {
+                tageGesamt++;
+                var tagIso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                var belegTag = 0;
+                relevante.forEach(function (b) {
+                  if (b.datum !== tagIso) return;
+                  if (b.stunde_von <= st && b.stunde_bis >= st) { belegTag += (b.anzahl || 1); anzahlBuchungenZelle++; }
+                });
+                if (belegTag > 0) tageMitBeleg++;
+                belegSumme += belegTag;
+              }
+              d.setDate(d.getDate() + 1);
+            }
+            var genugDaten = anzahlBuchungenZelle >= AUSLASTUNG_MIN_N;
+            var belegSchnitt = (genugDaten && tageGesamt) ? (belegSumme / tageGesamt) : null;
+            heatmapZellen.push({ typ: typ, standort: standort, wochentag: wt, stunde: st, belegt_schnitt: belegSchnitt, engpass_tage: genugDaten ? tageMitBeleg : null });
+            if (belegSchnitt != null && belegSchnitt > spitzeBelegt) { spitzeBelegt = belegSchnitt; spitze = { wochentag: wt, stunde: st, belegt: Math.round(belegSchnitt), frei: Math.max(0, bestand - Math.round(belegSchnitt)) }; }
+          }
+        }
+        relevante.forEach(function (b) {
+          var von2 = Math.max(b.stunde_von, AUSLASTUNG_STUNDEN_VON), bis2 = Math.min(b.stunde_bis, AUSLASTUNG_STUNDEN_BIS);
+          if (bis2 >= von2) gebuchteKofferstunden += (b.anzahl || 1) * (bis2 - von2 + 1);
+        });
+        var verfuegbareKofferstunden = bestand * schultage * (AUSLASTUNG_STUNDEN_BIS - AUSLASTUNG_STUNDEN_VON + 1);
+        var genugPool = relevante.length >= AUSLASTUNG_MIN_N;
+        return {
+          typ: typ, standort: standort, bestand: bestand, geraete: geraete,
+          gebuchte_kofferstunden: genugPool ? gebuchteKofferstunden : null,
+          verfuegbare_kofferstunden: verfuegbareKofferstunden,
+          auslastung_prozent: (genugPool && verfuegbareKofferstunden) ? Math.round(gebuchteKofferstunden / verfuegbareKofferstunden * 1000) / 10 : null,
+          spitze: spitze,
+          _heatmap: heatmapZellen
+        };
+      });
+
+      var heatmap = [];
+      pools.forEach(function (p) { heatmap = heatmap.concat(p._heatmap); p._heatmap = undefined; delete p._heatmap; });
+
+      // Verlauf je Kalenderwoche
+      var verlaufMap = {};
+      buchungenImFenster.forEach(function (b) {
+        if (b.status === 'storniert') return;
+        var kw = isoWeek(b.datum);
+        if (!verlaufMap[kw]) verlaufMap[kw] = { kw: kw, buchungen: 0, kofferstunden: 0 };
+        verlaufMap[kw].buchungen++;
+        var von2 = Math.max(b.stunde_von, AUSLASTUNG_STUNDEN_VON), bis2 = Math.min(b.stunde_bis, AUSLASTUNG_STUNDEN_BIS);
+        if (bis2 >= von2) verlaufMap[kw].kofferstunden += (b.anzahl || 1) * (bis2 - von2 + 1);
+      });
+      var verlauf = Object.keys(verlaufMap).sort().map(function (k) { return verlaufMap[k]; });
+
+      // Qualitaet
+      var nichtStorniert = buchungenImFenster.filter(function (b) { return b.status !== 'storniert'; });
+      var storniertQuote = buchungenImFenster.length >= AUSLASTUNG_MIN_N
+        ? Math.round(buchungenImFenster.filter(function (b) { return b.status === 'storniert'; }).length / buchungenImFenster.length * 1000) / 10
+        : null;
+      var abgeholtQuote = null;
+      if (ds._ausgaben.length > 0 && nichtStorniert.length >= AUSLASTUNG_MIN_N) {
+        var mitCheckout = nichtStorniert.filter(function (b) {
+          return ds._ausgaben.some(function (a) { return a.buchung_id === b.id && a.aktion === 'checkout'; });
+        }).length;
+        abgeholtQuote = Math.round(mitCheckout / nichtStorniert.length * 1000) / 10;
+      }
+      var vorlaufTage = buchungenImFenster.filter(function (b) { return b.created_at; }).map(function (b) {
+        return Math.round((new Date(b.datum) - new Date(b.created_at.slice(0, 10))) / 86400000);
+      });
+      var vorlaufMedian = buchungenImFenster.length >= AUSLASTUNG_MIN_N ? median(vorlaufTage) : null;
+
+      pools.forEach(function (p) { delete p._heatmap; });
+
+      return {
+        zeitraum: { von: von, bis: bis, schultage: schultage, stunden_von: AUSLASTUNG_STUNDEN_VON, stunden_bis: AUSLASTUNG_STUNDEN_BIS, ferien_feiertage_beruecksichtigt: false },
+        pools: pools,
+        heatmap: heatmap,
+        verlauf: verlauf,
+        qualitaet: { storniert_prozent: storniertQuote, abgeholt_prozent: abgeholtQuote, vorlauf_tage_median: vorlaufMedian }
+      };
     }
 
     // Fehlercode → deutsche Meldung
@@ -684,15 +898,18 @@
       var raw = hasDetail ? err.message : ((err && (err.code || err.message)) || '');
       var code = String(raw).split(':')[0];
       var detail = String(raw).split(':').slice(1).join(':').trim();
+      // Wortlaut ab hier verbindlich aus "sprint opus ipad-buchung.md",
+      // Abschnitt "Vertraege fuer Sonnet" (19.09.2026) -- nicht frei formulieren.
       var map = {
-        koffer_not_found: 'Barcode nicht gefunden.',
-        koffer_inactive: 'Dieser Koffer ist außer Betrieb.',
-        already_checked_out: 'Koffer ist bereits ausgegeben.',
-        not_checked_out: 'Für diesen Koffer ist keine offene Ausgabe vorhanden.',
-        not_authenticated: 'Bitte zuerst anmelden.',
-        kapazitaet_belegt: 'Dieser Koffer ist in dieser Stunde belegt.',
+        koffer_not_found: 'Dieser Code gehört zu keinem Koffer.',
+        koffer_inactive: 'Dieser Koffer ist stillgelegt.',
+        already_checked_out: 'Der Koffer ist bereits ausgebucht — wurde er zurückgegeben?',
+        not_checked_out: 'Dieser Koffer ist gar nicht ausgebucht.',
+        not_authenticated: 'Bitte neu anmelden.',
+        lehrer_unbekannt: 'Dieses Kürzel ist im System nicht hinterlegt.',
+        kapazitaet_belegt: 'Dieser Koffer ist in dieser Stunde schon vergeben.',
+        not_authorized: 'Dafür fehlt die Berechtigung.',
         alles_belegt: 'Alle Koffer sind in dieser Stunde belegt!',
-        lehrer_unbekannt: 'Lehrer-Code nicht erkannt.',
         pool_leer: 'Für diese Auswahl sind keine Geräte erfasst.',
         invalid_anzahl: 'Bitte eine gültige Anzahl angeben.',
         invalid_range: '„Bis"-Stunde muss ≥ „Von"-Stunde sein.',
@@ -894,12 +1111,12 @@
             e('div', { className: 'field' },
               e('label', null, 'Von (Stunde)'),
               e('select', { value: von, onChange: function (ev) { setVon(Number(ev.target.value)); }, 'data-testid': 'res-von' },
-                STUNDEN.map(function (s) { return e('option', { key: s, value: s }, s + '. Stunde'); }))
+                stundenListe(props.raster).map(function (s) { return e('option', { key: s, value: s, disabled: !istBuchbar(props.raster, s) }, s + '. Stunde' + (!istBuchbar(props.raster, s) ? ' (nicht buchbar)' : '')); }))
             ),
             e('div', { className: 'field' },
               e('label', null, 'Bis (Stunde)'),
               e('select', { value: bis, onChange: function (ev) { setBis(Number(ev.target.value)); }, 'data-testid': 'res-bis' },
-                STUNDEN.map(function (s) { return e('option', { key: s, value: s }, s + '. Stunde'); }))
+                stundenListe(props.raster).map(function (s) { return e('option', { key: s, value: s, disabled: !istBuchbar(props.raster, s) }, s + '. Stunde' + (!istBuchbar(props.raster, s) ? ' (nicht buchbar)' : '')); }))
             )
           ),
           modus === 'pool' && kapaInfo && e('div', {
@@ -926,7 +1143,7 @@
                   e('div', { className: 'name' }, mainLabel),
                   e('div', { className: 'meta' }, b.datum + ' · ' + b.stunde_von + '.–' + b.stunde_bis + '. Std' + (b.zweck ? ' · ' + b.zweck : ''))
                 ),
-                e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : (b.status === 'zurueck' ? 'frei' : 'reserviert')) }, statusLabel(b.status)),
+                e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : b.status === 'zurueck' ? 'frei' : b.status === 'abgelaufen' ? 'abgelaufen' : 'reserviert') }, statusLabel(b.status)),
                 // Feedback #9 (Stresstest 09.07.): Reservierung wieder stornieren können
                 b.status === 'reserviert' && e('button', {
                   className: 'storno-btn',
@@ -948,7 +1165,7 @@
             })
       );
     }
-    function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück' })[s] || s; }
+    function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück', abgelaufen: 'Abgelaufen — nicht abgeholt', storniert: 'Storniert' })[s] || s; }
     function poolTypLabel(t) { return ({ ipad_koffer: 'iPad-Koffer', laptop_koffer: 'Laptop-Koffer' })[t] || t || 'Gerät'; }
     function poolStandortLabel(s) { return ({ LZ: 'LZ', '1OG': '1. OG' })[s] || s || '—'; }
 
@@ -961,22 +1178,35 @@
       var [busy, setBusy] = useState(false);
       var [tick, setTick] = useState(0);
       var [result, setResult] = useState(null);
+      var [fastInput, setFastInput] = useState(false); // Timing-Heuristik: nur Anzeige, nie Sperre
+      var [camActive, setCamActive] = useState(false);
+      var [camErr, setCamErr] = useState('');
       var st = useRef({ lehrer: null, mode: 'checkout', slot: null });
       var inputRef = useRef(null);
+      var scannerRef = useRef(null);
+      var pendingRef = useRef(null); // { fn: 'checkout'|'return', lehrerCode, barcode, key } -- fuer Retry mit gleichem idempotency_key
+      var keyTimesRef = useRef([]);
       var rerender = function () { setTick(function (n) { return n + 1; }); };
       var refocus = function () { setTimeout(function () { if (inputRef.current) inputRef.current.focus(); }, 0); };
 
       var reset = function (keepMode) { st.current = { lehrer: null, mode: keepMode ? st.current.mode : 'checkout', slot: null }; rerender(); };
 
-      var doCheckout = function (lehrerCode, barcode) {
+      // S2 (19.09.2026): Idempotenzschluessel wird EINMAL je Scan-Vorgang erzeugt
+      // (crypto.randomUUID) und bei einem Wiederholungsversuch nach Netzfehler
+      // unveraendert erneut gesendet -- sonst legt ein Retry eine zweite Ausgabe an.
+      // Erkennung "Netzfehler vs. fachlicher Fehler": fachliche RPC-Fehler tragen
+      // immer einen err.code (siehe _rpcErr/makeErr); ohne code -> Transport-/
+      // Netzproblem, dafuer bieten wir den Retry-Button an.
+      var doCheckout = function (lehrerCode, barcode, retryKey) {
         var range = st.current.slot || slotToRange('SLOT-JETZT');
+        var key = retryKey || uuid();
+        pendingRef.current = { fn: 'checkout', lehrerCode: lehrerCode, barcode: barcode, key: key };
         setBusy(true);
-        ds.stationCheckout(lehrerCode, barcode, range, uuid()).then(function (res) {
+        ds.stationCheckout(lehrerCode, barcode, range, key).then(function (res) {
+          pendingRef.current = null;
           var name = (res.lehrer && res.lehrer.display_name) || (st.current.lehrer && st.current.lehrer.display_name) || lehrerCode;
           var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
           var text = kname + ' → ' + name + ' · ' + range.label;
-          // S3 (31.07.2026): Scan verknüpft mit eigener Pool-Reservierung → Hinweis,
-          // kein Zwang (Scan bleibt bei Pool-Buchungen weiterhin freiwillig).
           if (res.pool) {
             text += ' · ✓ auf deine Reservierung gebucht — ' + res.pool.abgeholt + ' von ' + res.pool.anzahl + ' abgeholt';
           }
@@ -984,21 +1214,72 @@
           showToast('Ausgegeben: ' + kname, 'success');
           reset(true); if (props.onChange) props.onChange();
         }).catch(function (err) {
-          setResult({ ok: false, title: 'Fehler', text: errMsg(err) });
+          setResult({ ok: false, title: 'Fehler', text: errMsg(err), retry: !err.code });
           showToast(errMsg(err), 'error');
         }).then(function () { setBusy(false); refocus(); });
       };
-      var doReturn = function (barcode) {
+      var doReturn = function (barcode, retryKey) {
+        var key = retryKey || uuid();
+        pendingRef.current = { fn: 'return', barcode: barcode, key: key };
         setBusy(true);
-        ds.stationReturn(barcode, uuid()).then(function (res) {
+        ds.stationReturn(barcode, key).then(function (res) {
+          pendingRef.current = null;
           var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
           setResult({ ok: true, title: 'Zurückgegeben', text: kname + ' ist wieder verfügbar.' });
           showToast('Zurückgegeben: ' + kname, 'success');
           reset(false); if (props.onChange) props.onChange();
         }).catch(function (err) {
-          setResult({ ok: false, title: 'Fehler', text: errMsg(err) });
+          setResult({ ok: false, title: 'Fehler', text: errMsg(err), retry: !err.code });
           showToast(errMsg(err), 'error');
         }).then(function () { setBusy(false); refocus(); });
+      };
+      var retryPending = function () {
+        var p = pendingRef.current;
+        if (!p) return;
+        if (p.fn === 'checkout') doCheckout(p.lehrerCode, p.barcode, p.key);
+        else doReturn(p.barcode, p.key);
+      };
+
+      var stopCamera = function () {
+        var s2 = scannerRef.current;
+        scannerRef.current = null;
+        setCamActive(false);
+        if (s2) { s2.stop().then(function () { try { s2.clear(); } catch (ignore) {} }).catch(function () {}); }
+      };
+      var startCamera = function () {
+        setCamErr('');
+        if (typeof Html5Qrcode === 'undefined') { setCamErr('Kamera-Bibliothek konnte nicht geladen werden — bitte Code eintippen.'); return; }
+        var qr = new Html5Qrcode('station-cam-region');
+        scannerRef.current = qr;
+        qr.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 240, height: 240 } },
+          function onScan(decodedText) { stopCamera(); processCode(decodedText); },
+          function onFail() { /* kein Treffer in diesem Frame -- normal, kein Fehler */ }
+        ).then(function () { setCamActive(true); }).catch(function (err) {
+          scannerRef.current = null; setCamActive(false);
+          setCamErr('Kamera nicht verfügbar (' + ((err && err.message) || 'Zugriff verweigert') + ') — bitte Code eintippen oder scannen.');
+          refocus();
+        });
+      };
+      useEffect(function () { return function () { stopCamera(); }; }, []);
+
+      var onInputKeyDown = function (ev) {
+        var now = performance.now();
+        if (ev.key !== 'Enter' && ev.key.length === 1) {
+          var arr = keyTimesRef.current; arr.push(now);
+          if (arr.length > 8) arr.shift();
+        }
+        if (ev.key === 'Enter') {
+          var times = keyTimesRef.current;
+          if (times.length >= 3) {
+            var gaps = []; for (var i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+            var avg = gaps.reduce(function (a, b) { return a + b; }, 0) / gaps.length;
+            setFastInput(avg < 30); // nur Anzeige (Kontext 10), nie als Sperre verwendet
+          }
+          keyTimesRef.current = [];
+          ev.preventDefault(); processCode(input);
+        }
       };
 
       var processCode = function (raw) {
@@ -1034,27 +1315,235 @@
           e('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' } },
             e('span', { className: 'status-pill ' + (s.mode === 'return' ? 'ausgegeben' : (s.lehrer ? 'frei' : 'reserviert')), 'data-testid': 'station-mode' },
               s.mode === 'return' ? '📥 Rückgabe' : (s.lehrer ? ('👩‍🏫 ' + (s.lehrer.display_name || s.lehrer.kuerzel)) : '① Lehrer-Code')),
-            s.mode === 'checkout' && s.slot && e('span', { className: 'status-pill reserviert', 'data-testid': 'station-slot' }, '🕑 ' + s.slot.label)
+            s.mode === 'checkout' && s.slot && e('span', { className: 'status-pill reserviert', 'data-testid': 'station-slot' }, '🕑 ' + s.slot.label),
+            fastInput && e('span', { className: 'status-pill frei', title: 'Zeitabstand zwischen den Zeichen < 30 ms -- nur eine Anzeige, keine Sperre' }, '⚡ Scanner erkannt')
           ),
           e('div', { className: 'big-text', style: { fontSize: '17px', fontWeight: 700, marginBottom: '10px' }, 'data-testid': 'station-prompt' }, prompt),
-          e('div', { className: 'field' },
-            e('input', {
-              ref: inputRef, type: 'text', value: input, autoFocus: true, disabled: busy,
-              placeholder: 'Barcode scannen oder tippen …', 'data-testid': 'station-input',
-              onChange: function (ev) { setInput(ev.target.value); },
-              onKeyDown: function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); processCode(input); } }
-            })
+          e('div', { className: 'scan-input-row' },
+            e('div', { className: 'field' },
+              e('input', {
+                ref: inputRef, type: 'text', value: input, autoFocus: true, disabled: busy,
+                placeholder: 'Barcode scannen oder tippen …', 'data-testid': 'station-input',
+                onChange: function (ev) { setInput(ev.target.value); },
+                onKeyDown: onInputKeyDown
+              })
+            ),
+            e('button', {
+              type: 'button', className: 'btn btn-ghost', style: { width: 'auto', minWidth: '44px', padding: '0 14px' },
+              onClick: function () { camActive ? stopCamera() : startCamera(); }, 'data-testid': 'station-cam-toggle'
+            }, camActive ? '⏹' : '📷')
           ),
-          e('div', { className: 'btn-row' },
+          e('div', { id: 'station-cam-region', style: { display: camActive ? 'block' : 'none', marginTop: '10px', borderRadius: '8px', overflow: 'hidden', maxWidth: '320px' } }),
+          camErr && e('div', { className: 'inline-note warn', 'data-testid': 'station-cam-err' }, camErr),
+          e('div', { className: 'btn-row', style: { marginTop: '10px' } },
             e('button', { className: 'btn', disabled: busy, onClick: function () { processCode(input); }, 'data-testid': 'station-go' }, '↵ Scannen'),
             e('button', { className: 'btn btn-ghost', onClick: function () { reset(false); setResult(null); refocus(); }, 'data-testid': 'station-reset' }, '✕ Abbrechen')
           ),
           result && e('div', { className: 'big-status ' + (result.ok ? 'ok' : 'err'), 'data-testid': 'station-result' },
             e('div', { className: 'big-icon' }, result.ok ? '✓' : '✕'),
             e('div', { className: 'big-text' }, result.title),
-            e('div', { style: { fontSize: '13px', marginTop: '2px' } }, result.text)
+            e('div', { style: { fontSize: '13px', marginTop: '2px' } }, result.text),
+            result.retry && e('button', {
+              className: 'btn btn-ghost', style: { marginTop: '10px' }, onClick: retryPending, 'data-testid': 'station-retry'
+            }, '🔁 Erneut versuchen (gleicher Vorgang)')
           ),
-          e('div', { className: 'inline-note' }, 'Ablauf: ① Lehrer-Code  →  ② optional Stunde/Doppelstunde  →  ③ Koffer = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer.')
+          e('div', { className: 'inline-note' }, 'Ablauf: ① Lehrer-Code  →  ② optional Stunde/Doppelstunde  →  ③ Koffer = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer. Kamera startet nur auf Knopfdruck.')
+        )
+      );
+    }
+
+    // ── S1: Zeitraum-Presets ──────────────────────────────────────
+    function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function presetRange(preset) {
+      var heute = new Date();
+      if (preset === 'letzte4') {
+        var von = new Date(heute); von.setDate(von.getDate() - 27);
+        return { von: ymd(von), bis: ymd(heute) };
+      }
+      if (preset === 'halbjahr') {
+        // BW-Schuljahr: 1. Halbjahr 01.08.-31.01., 2. Halbjahr 01.02.-31.07.
+        var jahr = heute.getFullYear(), monat = heute.getMonth() + 1;
+        if (monat >= 8) return { von: jahr + '-08-01', bis: (jahr + 1) + '-01-31' };
+        if (monat <= 1) return { von: (jahr - 1) + '-08-01', bis: jahr + '-01-31' };
+        return { von: jahr + '-02-01', bis: jahr + '-07-31' };
+      }
+      return null; // 'frei' -> Nutzer waehlt selbst
+    }
+
+    function fmtProzent(v) { return v == null ? null : (String(v).replace('.', ',') + ' %'); }
+    function heatColor(ratio) {
+      // frei (gruen-transparent) -> voll (kraeftiges lila), Bordmittel (keine Chart-Lib)
+      var r = Math.max(0, Math.min(1, ratio));
+      if (r === 0) return '#e2e8f0';
+      var lightness = 88 - r * 55; // 88% (hell) .. 33% (dunkel)
+      return 'hsl(262, 60%, ' + lightness + '%)';
+    }
+    function wochentagKurz(n) { return (['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'])[n - 1] || String(n); }
+
+    // Handlungshinweise: NUR wenn die Bedingung tatsaechlich in den Zahlen
+    // steht (keine erfundenen Empfehlungen). Vergleicht je Wochentag/Stunde
+    // die Pools desselben Typs ueber die Standorte hinweg.
+    function ableiteHandlungshinweise(pools, heatmap) {
+      var hinweise = [];
+      var byTypStandort = {};
+      pools.forEach(function (p) { byTypStandort[p.typ + '||' + p.standort] = p; });
+      var typen = {}; pools.forEach(function (p) { typen[p.typ] = true; });
+      Object.keys(typen).forEach(function (typ) {
+        var standorte = pools.filter(function (p) { return p.typ === typ; }).map(function (p) { return p.standort; });
+        if (standorte.length < 2) return;
+        for (var wt = 1; wt <= 5; wt++) {
+          for (var st = AUSLASTUNG_STUNDEN_VON; st <= AUSLASTUNG_STUNDEN_BIS; st++) {
+            var werte = standorte.map(function (s) {
+              var pool = byTypStandort[typ + '||' + s];
+              var cell = heatmap.find(function (h) { return h.typ === typ && h.standort === s && h.wochentag === wt && h.stunde === st; });
+              var ratio = (cell && cell.belegt_schnitt != null && pool.bestand) ? cell.belegt_schnitt / pool.bestand : null;
+              return { standort: s, ratio: ratio };
+            });
+            var voll = werte.filter(function (w) { return w.ratio != null && w.ratio >= 0.85; });
+            var frei = werte.filter(function (w) { return w.ratio != null && w.ratio <= 0.35; });
+            if (voll.length && frei.length) {
+              voll.forEach(function (v) {
+                frei.forEach(function (fr) {
+                  hinweise.push(poolTypLabel(typ) + ' ' + fr.standort + ' ist ' + wochentagKurz(wt) + ' ' + st + '. Stunde bei ' +
+                    Math.round(fr.ratio * 100) + ' % Auslastung, ' + v.standort + ' zur selben Zeit bei ' + Math.round(v.ratio * 100) +
+                    ' %. Einen Koffer von ' + v.standort + ' nach ' + fr.standort + ' umverteilen wäre eine Option.');
+                });
+              });
+            }
+          }
+        }
+      });
+      // Auf max. 4 begrenzen und Dubletten (gleiches Wochentag/Stunde-Muster) vermeiden
+      var uniq = [];
+      hinweise.forEach(function (h) { if (uniq.indexOf(h) === -1) uniq.push(h); });
+      return uniq.slice(0, 4);
+    }
+
+    function AuslastungView(props) {
+      var ds = props.ds;
+      var [preset, setPreset] = useState('letzte4');
+      var [freiVon, setFreiVon] = useState(ymd(new Date(new Date().setDate(new Date().getDate() - 27))));
+      var [freiBis, setFreiBis] = useState(ymd(new Date()));
+      var [data, setData] = useState(null);
+      var [loading, setLoading] = useState(true);
+      var [err, setErr] = useState(null);
+
+      var range = preset === 'frei' ? { von: freiVon, bis: freiBis } : presetRange(preset);
+
+      useEffect(function () {
+        if (!range || !range.von || !range.bis) return;
+        setLoading(true); setErr(null);
+        ds.getAuslastung(range.von, range.bis).then(function (d) {
+          setData(d); setLoading(false);
+        }).catch(function (e) {
+          setErr(errMsg(e)); setLoading(false);
+        });
+      }, [ds, range && range.von, range && range.bis]);
+
+      return e('div', { 'data-testid': 'auslastung-view' },
+        e('div', { className: 'section-title', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+          e('span', null, 'Auslastung'),
+          e('a', {
+            href: 'etiketten.html', target: '_blank', rel: 'noopener',
+            style: { fontSize: '12px', fontWeight: 700, color: 'var(--primary-dark)', textTransform: 'none', letterSpacing: 0 },
+            'data-testid': 'ausl-etiketten-link'
+          }, '🏷️ Etiketten drucken')
+        ),
+        e('div', { className: 'card' },
+          e('div', { className: 'zeitraum-switch', role: 'tablist', 'aria-label': 'Zeitraum' },
+            e('button', { type: 'button', className: 'zeitraum-btn' + (preset === 'letzte4' ? ' active' : ''), 'data-testid': 'ausl-preset-4w', onClick: function () { setPreset('letzte4'); } }, 'Letzte 4 Wochen'),
+            e('button', { type: 'button', className: 'zeitraum-btn' + (preset === 'halbjahr' ? ' active' : ''), 'data-testid': 'ausl-preset-hj', onClick: function () { setPreset('halbjahr'); } }, 'Laufendes Halbjahr'),
+            e('button', { type: 'button', className: 'zeitraum-btn' + (preset === 'frei' ? ' active' : ''), 'data-testid': 'ausl-preset-frei', onClick: function () { setPreset('frei'); } }, 'Frei wählbar')
+          ),
+          preset === 'frei' && e('div', { className: 'field-row' },
+            e('div', { className: 'field' }, e('label', null, 'Von'), e('input', { type: 'date', value: freiVon, onChange: function (ev) { setFreiVon(ev.target.value); }, 'data-testid': 'ausl-von' })),
+            e('div', { className: 'field' }, e('label', null, 'Bis'), e('input', { type: 'date', value: freiBis, min: freiVon, onChange: function (ev) { setFreiBis(ev.target.value); }, 'data-testid': 'ausl-bis' }))
+          )
+        ),
+        loading && e('div', { className: 'empty' }, e('p', null, 'Lädt Auslastung …')),
+        err && e('div', { className: 'card' }, e('p', { className: 'inline-note warn' }, err)),
+        !loading && !err && data && e(React.Fragment, null,
+          e('div', { className: 'inline-note' }, data.zeitraum.von + ' bis ' + data.zeitraum.bis + ' · ' + data.zeitraum.schultage + ' Schultage · Fenster ' + data.zeitraum.stunden_von + '.–' + data.zeitraum.stunden_bis + '. Stunde' +
+            (data.zeitraum.ferien_feiertage_beruecksichtigt ? '' : ' · Ferien/Feiertage nicht herausgerechnet')),
+
+          ableiteHandlungshinweise(data.pools, data.heatmap).map(function (h, i) {
+            return e('div', { key: i, className: 'hinweis-card', 'data-testid': 'ausl-hinweis' }, '💡 ' + h);
+          }),
+
+          e('div', { className: 'stat-grid' },
+            e('div', { className: 'stat-card' },
+              e('div', { className: 'stat-label' }, 'Storniert-Quote'),
+              e('div', { className: 'stat-value' + (data.qualitaet.storniert_prozent == null ? ' na' : ''), 'data-testid': 'ausl-storniert' },
+                data.qualitaet.storniert_prozent == null ? 'noch keine Daten' : fmtProzent(data.qualitaet.storniert_prozent))
+            ),
+            e('div', { className: 'stat-card' },
+              e('div', { className: 'stat-label' }, 'Abgeholt-Quote'),
+              e('div', { className: 'stat-value' + (data.qualitaet.abgeholt_prozent == null ? ' na' : ''), 'data-testid': 'ausl-abgeholt' },
+                data.qualitaet.abgeholt_prozent == null ? 'noch keine Daten' : fmtProzent(data.qualitaet.abgeholt_prozent))
+            ),
+            e('div', { className: 'stat-card' },
+              e('div', { className: 'stat-label' }, 'Vorlauf (Median)'),
+              e('div', { className: 'stat-value' + (data.qualitaet.vorlauf_tage_median == null ? ' na' : '') },
+                data.qualitaet.vorlauf_tage_median == null ? 'noch keine Daten' : (data.qualitaet.vorlauf_tage_median + ' Tage'))
+            )
+          ),
+
+          data.pools.map(function (p) {
+            var poolHeatmap = data.heatmap.filter(function (h) { return h.typ === p.typ && h.standort === p.standort; });
+            var maxBelegt = Math.max(1, p.bestand);
+            return e('div', { key: p.typ + '-' + p.standort, 'data-testid': 'ausl-pool' },
+              e('div', { className: 'pool-heading' }, poolTypLabel(p.typ) + ' · ' + poolStandortLabel(p.standort)),
+              e('div', { className: 'stat-grid' },
+                e('div', { className: 'stat-card' }, e('div', { className: 'stat-label' }, 'Bestand'), e('div', { className: 'stat-value' }, p.bestand)),
+                e('div', { className: 'stat-card' },
+                  e('div', { className: 'stat-label' }, 'Auslastung'),
+                  e('div', { className: 'stat-value' + (p.auslastung_prozent == null ? ' na' : ''), 'data-testid': 'ausl-prozent' },
+                    p.auslastung_prozent == null ? 'noch keine Daten' : fmtProzent(p.auslastung_prozent))
+                ),
+                e('div', { className: 'stat-card' },
+                  e('div', { className: 'stat-label' }, 'Spitzenstunde'),
+                  e('div', { className: 'stat-value' + (!p.spitze ? ' na' : '') },
+                    p.spitze ? (wochentagKurz(p.spitze.wochentag) + ' ' + p.spitze.stunde + '. Std') : 'noch keine Daten')
+                )
+              ),
+              e('div', { className: 'card heatmap-wrap' },
+                e('div', { className: 'heatmap-grid' },
+                  e('div', { className: 'hm-head' }, ''),
+                  [1,2,3,4,5].map(function (wt) { return e('div', { key: 'h' + wt, className: 'hm-head' }, wochentagKurz(wt)); }),
+                  Array.from({ length: AUSLASTUNG_STUNDEN_BIS - AUSLASTUNG_STUNDEN_VON + 1 }, function (_, i) { return AUSLASTUNG_STUNDEN_VON + i; }).map(function (st) {
+                    return [e('div', { key: 'r' + st, className: 'hm-row-label' }, st)].concat(
+                      [1,2,3,4,5].map(function (wt) {
+                        var cell = poolHeatmap.find(function (h) { return h.wochentag === wt && h.stunde === st; });
+                        var na = !cell || cell.belegt_schnitt == null;
+                        return e('div', {
+                          key: wt + '-' + st,
+                          className: 'heatmap-cell' + (na ? ' na' : ''),
+                          title: na ? 'zu wenige Daten' : (cell.belegt_schnitt.toFixed(1) + ' von ' + p.bestand + ' Ø belegt'),
+                          style: na ? {} : { background: heatColor(cell.belegt_schnitt / maxBelegt) },
+                          'data-testid': 'ausl-heatmap-zelle'
+                        }, na ? '·' : Math.round(cell.belegt_schnitt));
+                      })
+                    );
+                  })
+                )
+              )
+            );
+          }),
+
+          e('div', { className: 'section-title' }, 'Verlauf je Kalenderwoche'),
+          e('div', { className: 'card' },
+            data.verlauf.length === 0
+              ? e('div', { className: 'empty' }, e('p', null, 'noch keine Daten'))
+              : e('div', { className: 'verlauf-chart' }, (function () {
+                  var max = Math.max.apply(null, data.verlauf.map(function (v) { return v.kofferstunden; }).concat([1]));
+                  return data.verlauf.map(function (v) {
+                    return e('div', { key: v.kw, className: 'verlauf-bar-wrap' },
+                      e('div', { className: 'verlauf-bar', style: { height: Math.max(2, Math.round(v.kofferstunden / max * 70)) + 'px' }, title: v.kw + ': ' + v.kofferstunden + ' Kofferstunden, ' + v.buchungen + ' Buchungen' }),
+                      e('div', { className: 'verlauf-label' }, v.kw.replace('2026-', 'KW'))
+                    );
+                  });
+                })())
+          )
         )
       );
     }
@@ -1066,8 +1555,9 @@
       var [ready, setReady] = useState(false);
       var [profile, setProfile] = useState(null);
       var [ds, setDs] = useState(null);
-      var [tab, setTab] = useState('reservieren');
+      var [tab, setTab] = useState(function () { return QS.get('view') === 'scan' ? 'scannen' : 'reservieren'; });
       var [refreshKey, setRefreshKey] = useState(0);
+      var [raster, setRaster] = useState(null); // S4: Stundenraster aus der DB
       var modeRef = useRef('demo');
 
       var bump = useCallback(function () { setRefreshKey(function (n) { return n + 1; }); }, []);
@@ -1090,10 +1580,24 @@
       useEffect(function () {
         // Demo-Modus (Tests / kein Backend)
         if (window.__FORCE_DEMO) {
-          var demoUser = { id: 0, display_name: 'Demo Lehrer', kuerzel: window.__FORCE_USER || 'Demo', role: 'admin', avatar_color: '#7c3aed' };
+          var forcedKuerzel = window.__FORCE_USER || 'Demo';
+          var passendZuLehrerliste = LEHRER_BY_CODE['L-' + forcedKuerzel.toUpperCase()];
+          // admin_whitelist (siehe CLAUDE.md): Ko/Ca/Sch sind Admins. Ohne
+          // forceUser (klassischer Demo-Aufruf) bleibt das Verhalten wie vor
+          // S1 admin, damit bestehende manuelle Demos nicht brechen. Ein
+          // EXPLIZIT anderes Kuerzel (z. B. L2) ist bewusst NICHT-Admin, damit
+          // sich "Nicht-Admin sieht Auslastung nicht" ueberhaupt testen laesst.
+          var ADMIN_KUERZEL = ['KO', 'CA', 'SCH'];
+          var istAdminDemo = !window.__FORCE_USER || ADMIN_KUERZEL.indexOf(forcedKuerzel.toUpperCase()) !== -1;
+          // id wird an LEHRER_BY_CODE angeglichen, damit ein Scan des eigenen
+          // Kuerzels an der Station dieselbe Buchung findet wie beim Reservieren.
+          var demoUser = passendZuLehrerliste
+            ? Object.assign({}, passendZuLehrerliste, { role: istAdminDemo ? 'admin' : 'member', avatar_color: '#7c3aed' })
+            : { id: 0, display_name: 'Demo Lehrer', kuerzel: forcedKuerzel, role: istAdminDemo ? 'admin' : 'member', avatar_color: '#7c3aed' };
           modeRef.current = 'demo';
           var d = new DataService(null, demoUser);
           setDs(d); setProfile(demoUser); setReady(true);
+          window.__KRS_TEST_HOOKS__ = { ds: d, uuid: uuid, errMsg: errMsg, makeErr: makeErr, stundenListe: stundenListe, istBuchbar: istBuchbar };
           return;
         }
         // Supabase-Modus: geteilte Session (gleiche Origin wie Connect) nutzen
@@ -1107,11 +1611,22 @@
           if (session && session.user) {
             // S2: Lehrer-Anzeige-Liste serverseitig laden (fire-and-forget)
             refreshLehrerFromDb(client);
+            // S4: Stundenraster einmal laden, im State halten; bei Abrufausfall
+            // bleibt der Rueckfall aus daten.js aktiv (kein Absturz).
+            d.getStundenraster().then(function (rows) {
+              if (rows && rows.length) {
+                var z = {};
+                rows.forEach(function (r) { z[r.stunde] = [String(r.beginn).slice(0, 5), String(r.ende).slice(0, 5)]; });
+                MEDIEN.STUNDEN_ZEITEN = z;
+                setRaster(rows);
+              }
+            }).catch(function () { console.warn('Stundenraster-Abruf fehlgeschlagen -- Rueckfall auf daten.js aktiv.'); });
             // App-User-Identität aus public.users (über E-Mail) holen
             client.from('users').select('id, display_name, kuerzel, role, avatar_color').eq('email', session.user.email).maybeSingle()
               .then(function (ur) {
                 var u = (ur && ur.data) || { id: null, display_name: session.user.email, kuerzel: '?', role: 'member' };
                 d.setUser(u); setProfile(u); setReady(true);
+                window.__KRS_TEST_HOOKS__ = { ds: d, uuid: uuid, errMsg: errMsg, makeErr: makeErr, stundenListe: stundenListe, istBuchbar: istBuchbar };
               });
           } else {
             // Keine Session → Hinweis; Lesen (Bestand) klappt nur, wenn angemeldet
@@ -1127,6 +1642,9 @@
 
       var initials = (profile && (profile.kuerzel || (profile.display_name || '?').charAt(0))) || '?';
       var notLoggedIn = modeRef.current === 'supabase' && !profile;
+      // S1: Sichtbarkeit reine Bequemlichkeit -- rpc_auslastung prueft
+      // is_app_admin() ohnehin serverseitig und wirft sonst not_authorized.
+      var isAdmin = !!(profile && (profile.role === 'admin' || profile.role === 'owner'));
 
       return e('div', { className: 'app', 'data-mode': modeRef.current },
         e('header', { className: 'header' },
@@ -1150,12 +1668,14 @@
               e('nav', { className: 'tabs', role: 'tablist' },
                 tabBtn('reservieren', '🗓️', 'Reservieren', tab, setTab),
                 tabBtn('scannen', '📷', 'Station', tab, setTab),
-                tabBtn('bestand', '📦', 'Bestand', tab, setTab)
+                tabBtn('bestand', '📦', 'Bestand', tab, setTab),
+                isAdmin && tabBtn('auslastung', '📊', 'Auslastung', tab, setTab)
               ),
               e('main', { className: 'content' },
-                tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, onChange: bump }),
+                tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, raster: raster, onChange: bump }),
                 tab === 'scannen' && e(StationView, { ds: ds, onChange: bump }),
-                tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey })
+                tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey }),
+                tab === 'auslastung' && isAdmin && e(AuslastungView, { ds: ds })
               )
             ),
         e(Toasts, null)
