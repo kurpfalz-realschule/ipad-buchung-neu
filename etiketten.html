@@ -18,22 +18,26 @@
     .label { border: 1px dashed var(--border); border-radius: 10px; padding: 12px; background: #fff; text-align: center; page-break-inside: avoid; break-inside: avoid; }
     .label .name { font-size: 14px; font-weight: 700; }
     .label .sub { font-size: 11px; color: var(--muted); margin-bottom: 6px; min-height: 14px; }
-    .label svg { width: 100%; height: 56px; }
+    .label .codes-row { display: flex; align-items: center; justify-content: center; gap: 10px; }
+    .label .codes-row svg { flex: 1; min-width: 0; height: 48px; }
+    .label .qr-box { flex: none; width: 56px; height: 56px; }
+    .label .qr-box canvas, .label .qr-box img { width: 100% !important; height: 100% !important; }
     .label .code { font-size: 11px; color: var(--muted); margin-top: 2px; letter-spacing: .5px; }
     .label.action { border-style: solid; border-color: var(--accent); }
     .hint { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+    .warn { color: #b45309; background: #fef3c7; border: 1px solid #d97706; border-radius: 8px; padding: 8px 12px; font-size: 12px; }
     @media print {
-      .toolbar, .hint { display: none !important; }
+      .toolbar, .hint, .warn { display: none !important; }
       body { background: #fff; }
       main { max-width: none; padding: 0; }
       .label { border-color: #94a3b8; }
       h2 { page-break-after: avoid; }
     }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.js"></script>
   <script src="daten.js"></script>
-  <!-- S2: echte Lehrerliste NUR lokal (gitignored; 404 im Deploy ist ok) -->
-  <script src="daten.local.js"></script>
 </head>
 <body>
   <div class="toolbar">
@@ -42,28 +46,51 @@
     <button onclick="window.print()">🖨️ Drucken</button>
   </div>
   <main id="root">
-    <p class="hint">Lade Daten …</p>
+    <p class="hint">Lade Koffer aus der Datenbank …</p>
   </main>
 
   <script>
   (function () {
-    var M = window.KRS_MEDIEN;
+    'use strict';
+    // S3 (19.09.2026): Koffer-Etiketten kommen jetzt aus koffer_physisch
+    // (WHERE aktiv) statt aus daten.js -- sonst driften Etikett und Bestand
+    // auseinander (Vertraege fuer Sonnet). daten.js bleibt nur Rueckfall,
+    // falls die DB nicht erreichbar ist (z.B. offline geoeffnet), UND liefert
+    // weiterhin die Aktions-/Stunden-Codes (die stehen nicht in der DB).
+    // Lehrer-Codes werden bewusst NICHT mehr gedruckt (Entscheidung E5,
+    // Sprint 1: die Station laeuft angemeldet, das eigene Kuerzel wird vom
+    // Client gesetzt -- Kuerzel-Etiketten an der Wand waeren nur ein
+    // unnoetiges Datenschutz-Risiko).
+    var SUPABASE_URL = 'https://ooejsfixxiuobrpqgfqm.supabase.co';
+    var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9vZWpzZml4eGl1b2JycHFnZnFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMjQ5MDYsImV4cCI6MjA4OTYwMDkwNn0.GbAv-sB4B8nNE3IPfiYIjbkMKs0Aq03c_-TUcmFY_5s';
+
+    var M = window.KRS_MEDIEN || { KOFFER: [], AKTIONEN: [], SLOTS: [] };
     var root = document.getElementById('root');
-    if (!M || typeof JSBarcode === 'undefined' && typeof window.JsBarcode === 'undefined') {
-      root.innerHTML = '<p>Fehler: Daten (daten.js) oder JsBarcode konnten nicht geladen werden.</p>';
-      return;
-    }
-    var BAR = window.JsBarcode;
+    var statusEl = document.getElementById('status');
 
     function label(value, name, sub, isAction) {
       var div = document.createElement('div');
       div.className = 'label' + (isAction ? ' action' : '');
       var h = document.createElement('div'); h.className = 'name'; h.textContent = name; div.appendChild(h);
       var s = document.createElement('div'); s.className = 'sub'; s.textContent = sub || ''; div.appendChild(s);
-      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); div.appendChild(svg);
+      var row = document.createElement('div'); row.className = 'codes-row'; div.appendChild(row);
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); row.appendChild(svg);
+      var qrBox = document.createElement('div'); qrBox.className = 'qr-box'; row.appendChild(qrBox);
       var code = document.createElement('div'); code.className = 'code'; code.textContent = value; div.appendChild(code);
-      // Barcode rendern (Code128)
-      try { BAR(svg, value, { format: 'CODE128', displayValue: false, margin: 0, height: 50 }); } catch (e) {}
+      // CODE128 fuer den Handscanner
+      try {
+        var BAR = window.JsBarcode;
+        if (BAR) BAR(svg, value, { format: 'CODE128', displayValue: false, margin: 0, height: 48 });
+      } catch (err) { /* Barcode konnte nicht gerendert werden -- Etikett bleibt trotzdem lesbar (Klartext) */ }
+      // QR zusaetzlich fuer die Kamera (Kontext 10: liest schraeg/teilverdeckt).
+      // Nutzinhalt exakt derselbe Wert -- KEINE URL, KEIN JSON (Vertraege fuer Sonnet).
+      try {
+        if (window.QRCode && window.QRCode.toCanvas) {
+          var canvas = document.createElement('canvas');
+          qrBox.appendChild(canvas);
+          window.QRCode.toCanvas(canvas, value, { width: 100, margin: 0 }, function (err) { if (err) qrBox.textContent = ''; });
+        }
+      } catch (err2) { /* QR optional -- CODE128 traegt den Druck allein, falls QR scheitert */ }
       return div;
     }
     function section(title, hintText) {
@@ -72,27 +99,54 @@
       var g = document.createElement('div'); g.className = 'grid'; root.appendChild(g); return g;
     }
 
-    root.innerHTML = '';
+    function render(koffer, quelle) {
+      root.innerHTML = '';
+      if (quelle === 'fallback') {
+        var w = document.createElement('div'); w.className = 'warn';
+        w.textContent = '⚠️ Datenbank nicht erreichbar -- Etiketten aus der lokalen Datei daten.js (kann veraltet sein). Bitte vor dem Anbringen mit dem tatsaechlichen Bestand abgleichen.';
+        root.appendChild(w);
+      }
 
-    // 1 · Koffer
-    var g1 = section('Koffer / Geräte (am Koffer anbringen)');
-    M.KOFFER.forEach(function (k) {
-      g1.appendChild(label(k.barcode, k.bezeichnung, k.standort + (k.kapazitaet > 0 ? ' · ' + k.kapazitaet + ' Geräte' : '') + (k.notiz ? ' · ' + k.notiz : '')));
-    });
+      // 1 . Koffer (aus der DB, nur aktive -- stillgelegte Dubletten damit
+      // automatisch draussen)
+      var g1 = section('Koffer / Geräte (am Koffer anbringen)');
+      koffer.forEach(function (k) {
+        var teile = [];
+        if (k.standort) teile.push(k.standort);
+        if (k.kapazitaet > 1) teile.push(k.kapazitaet + ' Geräte');
+        if (k.notiz) teile.push(k.notiz);
+        g1.appendChild(label(k.barcode, k.bezeichnung, teile.join(' · ')));
+      });
 
-    // 2 · Lehrer-Codes
-    var g2 = section('Lehrer-Codes (an der Wand · zuerst scannen)', 'Jede Lehrkraft scannt ihren Code, bevor sie einen Koffer ausbucht.');
-    M.LEHRER.forEach(function (l) {
-      g2.appendChild(label('L-' + l.kuerzel, l.name, 'Kürzel ' + l.kuerzel));
-    });
+      // 2 . Aktions- & Stunden-Codes (kommen weiterhin aus daten.js -- reine
+      // Ablauf-Steuercodes, kein Personenbezug, keine DB-Tabelle noetig)
+      var g2 = section('Aktions- & Stunden-Codes (an der Wand)', 'Rückgabe und Last-Minute-Buchung für aktuelle/nächste Stunde oder Doppelstunde.');
+      (M.AKTIONEN || []).forEach(function (a) { g2.appendChild(label(a.code, (a.icon ? a.icon + ' ' : '') + a.label, a.sub, true)); });
+      (M.SLOTS || []).forEach(function (sl) { g2.appendChild(label(sl.code, sl.label, sl.sub || 'feste Stunde', true)); });
 
-    // 3 · Aktions- & Stunden-Codes
-    var g3 = section('Aktions- & Stunden-Codes (an der Wand)', 'Rückgabe und Last-Minute-Buchung für aktuelle/nächste Stunde oder Doppelstunde.');
-    M.AKTIONEN.forEach(function (a) { g3.appendChild(label(a.code, (a.icon ? a.icon + ' ' : '') + a.label, a.sub, true)); });
-    M.SLOTS.forEach(function (sl) { g3.appendChild(label(sl.code, sl.label, sl.sub || 'feste Stunde', true)); });
+      statusEl.textContent = koffer.length + ' Koffer-Etiketten (' + (quelle === 'db' ? 'aus der Datenbank' : 'Rückfall daten.js') + ') · ' +
+        ((M.AKTIONEN || []).length + (M.SLOTS || []).length) + ' Aktions-Codes';
+    }
 
-    document.getElementById('status').textContent =
-      M.KOFFER.length + ' Koffer · ' + M.LEHRER.length + ' Lehrer · ' + (M.AKTIONEN.length + M.SLOTS.length) + ' Aktions-Codes';
+    function fallbackAusDatenJs() {
+      var koffer = (M.KOFFER || []).slice().sort(function (a, b) { return a.barcode < b.barcode ? -1 : 1; });
+      render(koffer, 'fallback');
+    }
+
+    if (!window.supabase) { fallbackAusDatenJs(); return; }
+    var client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    client.auth.getSession().then(function (res) {
+      var session = res && res.data && res.data.session;
+      if (!session) {
+        root.innerHTML = '<p class="hint">Bitte zuerst in KRS Connect anmelden — diese Seite nutzt dieselbe Sitzung. Danach neu laden.</p>';
+        return;
+      }
+      return client.from('koffer_physisch').select('*').eq('aktiv', true).order('typ').order('barcode')
+        .then(function (r) {
+          if (r.error || !r.data || !r.data.length) { fallbackAusDatenJs(); return; }
+          render(r.data, 'db');
+        });
+    }).catch(function () { fallbackAusDatenJs(); });
   })();
   </script>
 </body>
