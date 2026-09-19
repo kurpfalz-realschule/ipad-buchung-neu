@@ -6,23 +6,25 @@
 window.KRS_MEDIEN = {
 
   // ── Physische Koffer / Medien (Barcode = Scan-Code am Koffer) ──
-  // kapazitaet: bei Laptops aus der Vorlage (15); bei iPad-Koffern liegt
-  // keine Stückzahl vor → 0 = "nicht hinterlegt" (nur 1 buchbare Einheit).
+  // kapazitaet = Geraete je Koffer: iPad-Koffer 10, Laptop-Koffer 15.
+  // Stand 19.09.2026, identisch mit koffer_physisch in Supabase. Fuer die
+  // Verfuegbarkeit zaehlt weiterhin ein Koffer = eine buchbare Einheit;
+  // kapazitaet wird nur fuer Auswertungen ("wie viele Geraete") gebraucht.
   KOFFER: [
     // iPad-Koffer · Standort LZ (Lernzentrum)
-    { barcode: 'KOFFER-01', bezeichnung: 'iPad lila/weiß',     typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ',  notiz: 'iPad-Wagen (3 Koffer)' },
-    { barcode: 'KOFFER-02', bezeichnung: 'iPad grün',          typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ',  notiz: '' },
-    { barcode: 'KOFFER-03', bezeichnung: 'iPad gelb',          typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ',  notiz: '' },
-    { barcode: 'KOFFER-04', bezeichnung: 'iPad braun',         typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ',  notiz: 'iPad-Wagen (2 Koffer)' },
-    { barcode: 'KOFFER-05', bezeichnung: 'iPad grün/gelb',     typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ',  notiz: '' },
-    { barcode: 'KOFFER-06', bezeichnung: 'iPad rot/braun',     typ: 'ipad_koffer', kapazitaet: 0, standort: 'LZ',  notiz: 'weißer Koffer' },
+    { barcode: 'KOFFER-01', bezeichnung: 'iPad lila/weiß',     typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: 'iPad-Wagen (3 Koffer)' },
+    { barcode: 'KOFFER-02', bezeichnung: 'iPad grün',          typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: '' },
+    { barcode: 'KOFFER-03', bezeichnung: 'iPad gelb',          typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: '' },
+    { barcode: 'KOFFER-04', bezeichnung: 'iPad braun',         typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: 'iPad-Wagen (2 Koffer)' },
+    { barcode: 'KOFFER-05', bezeichnung: 'iPad grün/gelb',     typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: '' },
+    { barcode: 'KOFFER-06', bezeichnung: 'iPad rot/braun',     typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: 'weißer Koffer' },
     // iPad-Koffer · Standort 1. OG
-    { barcode: 'KOFFER-07', bezeichnung: 'iPad Silber',        typ: 'ipad_koffer', kapazitaet: 0, standort: '1OG', notiz: '' },
-    { barcode: 'KOFFER-08', bezeichnung: 'iPad Rot',           typ: 'ipad_koffer', kapazitaet: 0, standort: '1OG', notiz: '' },
-    { barcode: 'KOFFER-09', bezeichnung: 'iPad weiß',          typ: 'ipad_koffer', kapazitaet: 0, standort: '1OG', notiz: '' },
-    { barcode: 'KOFFER-10', bezeichnung: 'iPad lila',          typ: 'ipad_koffer', kapazitaet: 0, standort: '1OG', notiz: '' },
-    { barcode: 'KOFFER-11', bezeichnung: 'iPad orange',        typ: 'ipad_koffer', kapazitaet: 0, standort: '1OG', notiz: '' },
-    { barcode: 'KOFFER-12', bezeichnung: 'iPad grün/rot (VKL)', typ: 'ipad_koffer', kapazitaet: 0, standort: '1OG', notiz: 'VKL' },
+    { barcode: 'KOFFER-07', bezeichnung: 'iPad Silber',        typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
+    { barcode: 'KOFFER-08', bezeichnung: 'iPad Rot',           typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
+    { barcode: 'KOFFER-09', bezeichnung: 'iPad weiß',          typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
+    { barcode: 'KOFFER-10', bezeichnung: 'iPad lila',          typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
+    { barcode: 'KOFFER-11', bezeichnung: 'iPad orange',        typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
+    { barcode: 'KOFFER-12', bezeichnung: 'iPad grün/rot (VKL)', typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: 'VKL' },
     // Laptop-Koffer (Stückzahl aus Vorlage)
     { barcode: 'LAPTOP-01', bezeichnung: 'Laptop-Koffer 1',    typ: 'laptop_koffer', kapazitaet: 15, standort: 'LZ',  notiz: '15 PCs' },
     { barcode: 'LAPTOP-02', bezeichnung: 'Laptop-Koffer 2',    typ: 'laptop_koffer', kapazitaet: 15, standort: 'LZ',  notiz: '15 Stück' },
