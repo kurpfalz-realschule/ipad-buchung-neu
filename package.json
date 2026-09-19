@@ -1,0 +1,17 @@
+{
+  "name": "ipad-buchung-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Playwright-Smoke-Tests fuer KRS iPad-Buchung (Sprint 2, 19.09.2026)",
+  "scripts": {
+    "serve": "http-server . -p 4174 -c-1 --silent --cors",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:install": "playwright install --with-deps chromium",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0",
+    "http-server": "^14.1.1"
+  }
+}
