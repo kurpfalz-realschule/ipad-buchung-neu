@@ -19,12 +19,14 @@ test('S3: Etiketten-Rueckfall (kein Supabase erreichbar) + Druck-CSS', async ({ 
 
   const labelCount = await page.locator('.grid .label').count();
   expect(labelCount).toBeGreaterThan(0);
-  await expect(page.locator('.warn')).toContainText('Datenbank nicht erreichbar');
+  await expect(page.getByTestId('warn-db')).toContainText('Datenbank nicht erreichbar');
 
-  // Keine Lehrer-Codes mehr (Entscheidung E5) -- frueher gab es dafuer eine
-  // eigene Ueberschrift "Lehrer-Codes"
-  const headings = await page.locator('h2').allTextContents();
-  expect(headings.join(' ')).not.toMatch(/Lehrer-Codes/);
+  // Ohne Session liefert get_kollegium_public() nichts -- dann darf KEINE
+  // Lehrerliste gedruckt werden, sondern es muss ein Hinweis stehen
+  // (20.09.2026: Platzhalternamen auf einer Wandliste waeren schlimmer als
+  // gar keine Liste).
+  await expect(page.getByTestId('warn-lehrer')).toContainText('Keine Lehrerliste geladen');
+  expect(await page.locator('#sec-lehrer').count()).toBe(0);
 
   // Jedes Koffer-Etikett traegt CODE128 (svg) UND QR (canvas) nebeneinander
   const erstesLabel = page.locator('.grid .label').first();
@@ -34,5 +36,6 @@ test('S3: Etiketten-Rueckfall (kein Supabase erreichbar) + Druck-CSS', async ({ 
   // Druckansicht: Toolbar und Warnhinweis verschwinden
   await page.emulateMedia({ media: 'print' });
   await expect(page.locator('.toolbar')).toBeHidden();
-  await expect(page.locator('.warn')).toBeHidden();
+  await expect(page.getByTestId('warn-db')).toBeHidden();
+  await expect(page.getByTestId('warn-lehrer')).toBeHidden();
 });

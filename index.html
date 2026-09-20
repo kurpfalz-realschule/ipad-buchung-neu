@@ -238,7 +238,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.3.0'; // 19.09.2026: Auslastungsstatistik (Admin), Kamera-Scan an der Station, Stundenraster aus der DB, Status 'abgelaufen', Etiketten mit QR
+    window.KRS_BUCHUNG_VERSION = '1.4.0'; // 20.09.2026: Standort-Klartext (LZ = Lehrerzimmer, 1OG = Kartenraum), Koffer-Nummern 1-12 mit iPad-Bereich, Kuerzel als Lehrer-Code, Station-Modus „Ich selbst“
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -301,6 +301,16 @@
         });
         LEHRER_BY_CODE = map;
       }).catch(function () { /* Demo-Fallback bleibt */ });
+    }
+
+    // S4 (20.09.2026): Ein Lehrer-Code darf in beiden Schreibweisen ankommen --
+    // gedruckt steht "L-<Kuerzel>" auf der Wandliste, getippt genuegt das blanke
+    // Kuerzel ("Ko"). Der Server macht es genauso (rpc_station_checkout schneidet
+    // '^[Ll]-' ab), die Anzeige hier zieht nur nach.
+    function lehrerByCode(code) {
+      var c = String(code || '').trim().toUpperCase();
+      if (!c) return null;
+      return LEHRER_BY_CODE[/^L-/.test(c) ? c : 'L-' + c] || null;
     }
 
     // ── Klingelzeiten → aktuelle Schulstunde ──
@@ -643,9 +653,9 @@
               var abgeholtVorher = poolAbgeholtCount(self, bVorher.id);
               poolVorher = { buchung_id: bVorher.id, typ: bVorher.pool_typ, standort: bVorher.pool_standort, anzahl: bVorher.anzahl, abgeholt: abgeholtVorher, offen: bVorher.anzahl - abgeholtVorher };
             }
-            return resolve({ koffer: kVorher, lehrer: LEHRER_BY_CODE[(lehrerCode || '').toUpperCase()], range: range, buchung_id: vorher.buchung_id, pool: poolVorher, idempotent: true });
+            return resolve({ koffer: kVorher, lehrer: lehrerByCode(lehrerCode), range: range, buchung_id: vorher.buchung_id, pool: poolVorher, idempotent: true });
           }
-          var lehrer = LEHRER_BY_CODE[(lehrerCode || '').toUpperCase()];
+          var lehrer = lehrerByCode(lehrerCode);
           if (!lehrer) return reject(makeErr('lehrer_unbekannt', lehrerCode));
           var k = self._koffer.find(function (x) { return x.barcode === barcode; });
           if (!k) return reject(makeErr('koffer_not_found', barcode));
@@ -971,11 +981,16 @@
         koffer.map(function (k) {
           var statusCls = !k.aktiv ? 'inaktiv' : (open[k.id] ? 'ausgegeben' : 'frei');
           var statusTxt = !k.aktiv ? 'Außer Betrieb' : (open[k.id] ? 'Ausgegeben' : 'Frei');
+          var meta = [
+            standortLabel(k.standort),
+            kofferBereichText(k) || (k.kapazitaet > 1 ? k.kapazitaet + ' Geräte' : null),
+            k.barcode
+          ].filter(Boolean).join(' · ');
           return e('div', { key: k.id, className: 'koffer-item', 'data-testid': 'koffer-item', 'data-barcode': k.barcode },
             e('div', { className: 'koffer-icon' }, k.typ === 'beamer' ? '📽️' : (k.typ === 'ipad_koffer' ? '📱' : '📦')),
             e('div', { className: 'koffer-main' },
-              e('div', { className: 'name' }, k.bezeichnung),
-              e('div', { className: 'meta' }, (k.standort || '—') + ' · ' + k.barcode + (k.kapazitaet > 1 ? ' · ' + k.kapazitaet + ' Geräte' : ''))
+              e('div', { className: 'name' }, kofferTitel(k)),
+              e('div', { className: 'meta' }, meta)
             ),
             e('div', { className: 'status-pill ' + statusCls, 'data-testid': 'koffer-status' }, statusTxt)
           );
@@ -1085,8 +1100,8 @@
             e('div', { className: 'field' },
               e('label', null, 'Standort'),
               e('select', { value: poolStandort, onChange: function (ev) { setPoolStandort(ev.target.value); }, 'data-testid': 'res-pool-standort' },
-                e('option', { value: 'LZ' }, 'Lernzentrum (LZ)'),
-                e('option', { value: '1OG' }, '1. OG')
+                e('option', { value: 'LZ' }, 'Lehrerzimmer (LZ)'),
+                e('option', { value: '1OG' }, 'Kartenraum (1. OG)')
               )
             ),
             e('div', { className: 'field' },
@@ -1100,7 +1115,7 @@
             e('label', null, 'Koffer / Gerät'),
             e('select', { value: kofferId, onChange: function (ev) { setKofferId(ev.target.value); }, 'data-testid': 'res-koffer' },
               koffer.length === 0 ? e('option', { value: '' }, '— kein aktiver Koffer —') :
-              koffer.map(function (k) { return e('option', { key: k.id, value: String(k.id) }, k.bezeichnung); })
+              koffer.map(function (k) { return e('option', { key: k.id, value: String(k.id) }, kofferTitel(k) + (kofferBereichText(k) ? ' (' + kofferBereichText(k) + ')' : '')); })
             )
           ),
           e('div', { className: 'field' },
@@ -1136,7 +1151,7 @@
               var k = b.koffer || {};
               var mainLabel = isPool
                 ? ((b.anzahl || 1) + '× ' + poolTypLabel(b.pool_typ) + ' · ' + poolStandortLabel(b.pool_standort))
-                : (k.bezeichnung || ('Koffer #' + b.koffer_id));
+                : (k.bezeichnung ? kofferTitel(k) : ('Koffer #' + b.koffer_id));
               return e('div', { key: b.id, className: 'buchung-item', 'data-testid': 'buchung-item' },
                 e('div', { className: 'koffer-icon' }, '🗓️'),
                 e('div', { className: 'koffer-main' },
@@ -1167,7 +1182,36 @@
     }
     function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück', abgelaufen: 'Abgelaufen — nicht abgeholt', storniert: 'Storniert' })[s] || s; }
     function poolTypLabel(t) { return ({ ipad_koffer: 'iPad-Koffer', laptop_koffer: 'Laptop-Koffer' })[t] || t || 'Gerät'; }
-    function poolStandortLabel(s) { return ({ LZ: 'LZ', '1OG': '1. OG' })[s] || s || '—'; }
+    // ── Standort: Schlüssel bleiben 'LZ' / '1OG' (pool_frei_pro_stunde filtert
+    //    exakt darauf), nur der Klartext wird angezeigt. Korrektur 20.09.2026:
+    //    LZ ist das **Lehrerzimmer** (nicht Lernzentrum), 1OG der **Kartenraum**.
+    var STANDORT_LABEL = { LZ: 'Lehrerzimmer', '1OG': 'Kartenraum' };
+    function standortLabel(s) { return STANDORT_LABEL[s] || s || '—'; }
+    function poolStandortLabel(s) { return standortLabel(s); }
+
+    // ── Koffer-Nummer und iPad-Bereich ─────────────────────────────
+    // 12 iPad-Koffer à 10 Geräte: Koffer 1 = iPads 1–10, Koffer 2 = 11–20, …
+    // Koffer 12 = 111–120. Die Nummer steckt im Barcode (KOFFER-07 → 7), der
+    // Bereich folgt aus Nummer und Kapazität — keine zusätzliche Spalte nötig.
+    function kofferNummer(k) {
+      var m = /^KOFFER-0*(\d+)$/i.exec((k && k.barcode) || '');
+      return m ? Number(m[1]) : null;
+    }
+    function kofferBereich(k) {
+      var nr = kofferNummer(k);
+      var cap = Number(k && k.kapazitaet) || 0;
+      if (!nr || cap < 2 || (k && k.typ && k.typ !== 'ipad_koffer')) return null;
+      return { von: (nr - 1) * cap + 1, bis: nr * cap };
+    }
+    function kofferBereichText(k) {
+      var b = kofferBereich(k);
+      return b ? 'iPads ' + b.von + '–' + b.bis : null;
+    }
+    function kofferTitel(k) {
+      var nr = kofferNummer(k);
+      var name = (k && k.bezeichnung) || (k && k.barcode) || 'Koffer';
+      return nr ? ('Koffer ' + nr + ' · ' + name) : name;
+    }
 
     // ── Wand-Station (Kiosk): Lehrercode → (Slot) → Koffer = Ausbuchen;
     //    Rückgabe-Code → Koffer = Rückgabe. Ein USB/BT-Scanner tippt den Code
@@ -1181,7 +1225,29 @@
       var [fastInput, setFastInput] = useState(false); // Timing-Heuristik: nur Anzeige, nie Sperre
       var [camActive, setCamActive] = useState(false);
       var [camErr, setCamErr] = useState('');
-      var st = useRef({ lehrer: null, mode: 'checkout', slot: null });
+      var st = useRef({ lehrer: null, mode: 'checkout', slot: null, quelle: 'selbst' });
+      // S4 (20.09.2026): Zwei Wege zur Lehrkraft.
+      //  · 'selbst'  — auf dem eigenen iPad ist man am Hub angemeldet; es wird
+      //                nur noch der Koffer gescannt.
+      //  · 'wand'    — die Wandstation scannt zuerst den Lehrer-Code von der
+      //                ausgehängten Liste. Der Server lässt fremde Kürzel nur
+      //                für Admins zu (rpc_station_checkout: is_app_admin()).
+      // Das Profil liegt zusätzlich in einem Ref: der Kamera-Callback wird beim
+      // Start der Kamera eingefroren und würde sonst mit einem veralteten
+      // Kürzel buchen (stale closure).
+      var profileRef = useRef(props.profile);
+      profileRef.current = props.profile;
+      var meinKuerzel = (props.profile && props.profile.kuerzel) || null;
+      var istAdmin = !!(props.profile && (props.profile.role === 'admin' || props.profile.role === 'owner'));
+      if (!meinKuerzel && st.current.quelle === 'selbst') st.current.quelle = 'wand';
+      var eigenerLehrer = function () {
+        var p = profileRef.current;
+        if (!p || !p.kuerzel) return null;
+        return { code: 'L-' + p.kuerzel, kuerzel: p.kuerzel, display_name: p.display_name || p.kuerzel };
+      };
+      var aktiverLehrer = function () {
+        return st.current.quelle === 'selbst' ? eigenerLehrer() : st.current.lehrer;
+      };
       var inputRef = useRef(null);
       var scannerRef = useRef(null);
       var pendingRef = useRef(null); // { fn: 'checkout'|'return', lehrerCode, barcode, key } -- fuer Retry mit gleichem idempotency_key
@@ -1189,7 +1255,7 @@
       var rerender = function () { setTick(function (n) { return n + 1; }); };
       var refocus = function () { setTimeout(function () { if (inputRef.current) inputRef.current.focus(); }, 0); };
 
-      var reset = function (keepMode) { st.current = { lehrer: null, mode: keepMode ? st.current.mode : 'checkout', slot: null }; rerender(); };
+      var reset = function (keepMode) { st.current = { lehrer: null, mode: keepMode ? st.current.mode : 'checkout', slot: null, quelle: st.current.quelle }; rerender(); };
 
       // S2 (19.09.2026): Idempotenzschluessel wird EINMAL je Scan-Vorgang erzeugt
       // (crypto.randomUUID) und bei einem Wiederholungsversuch nach Netzfehler
@@ -1204,8 +1270,9 @@
         setBusy(true);
         ds.stationCheckout(lehrerCode, barcode, range, key).then(function (res) {
           pendingRef.current = null;
-          var name = (res.lehrer && res.lehrer.display_name) || (st.current.lehrer && st.current.lehrer.display_name) || lehrerCode;
-          var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
+          var al = aktiverLehrer();
+          var name = (res.lehrer && res.lehrer.display_name) || (al && al.display_name) || lehrerCode;
+          var kname = res.koffer ? kofferTitel(res.koffer) : barcode;
           var text = kname + ' → ' + name + ' · ' + range.label;
           if (res.pool) {
             text += ' · ✓ auf deine Reservierung gebucht — ' + res.pool.abgeholt + ' von ' + res.pool.anzahl + ' abgeholt';
@@ -1224,7 +1291,7 @@
         setBusy(true);
         ds.stationReturn(barcode, key).then(function (res) {
           pendingRef.current = null;
-          var kname = (res.koffer && res.koffer.bezeichnung) || barcode;
+          var kname = res.koffer ? kofferTitel(res.koffer) : barcode;
           setResult({ ok: true, title: 'Zurückgegeben', text: kname + ' ist wieder verfügbar.' });
           showToast('Zurückgegeben: ' + kname, 'success');
           reset(false); if (props.onChange) props.onChange();
@@ -1286,12 +1353,21 @@
         var code = (raw || '').trim();
         setInput('');
         if (!code) return;
-        if (/^L-/i.test(code)) {
-          var l = LEHRER_BY_CODE[code.toUpperCase()];
-          st.current.lehrer = l ? Object.assign({ code: code }, l) : { code: code, kuerzel: code.replace(/^L-/i, ''), display_name: code.replace(/^L-/i, '') };
+        // Lehrer-Code: "L-<Kürzel>" (so steht es auf der Wandliste) oder das
+        // blanke Kürzel, wenn jemand es eintippt. Geräte-Barcodes gehen vor,
+        // damit ein Kürzel niemals einen Koffer verdeckt.
+        var istGeraet = /^(KOFFER|LAPTOP|RAUM|BEAMER)-/i.test(code);
+        var trefferLehrer = istGeraet ? null : lehrerByCode(code);
+        if (!istGeraet && (/^L-/i.test(code) || trefferLehrer)) {
+          var kuerzelRein = code.replace(/^L-/i, '');
+          st.current.lehrer = trefferLehrer
+            ? Object.assign({}, trefferLehrer, { code: 'L-' + trefferLehrer.kuerzel })
+            : { code: code, kuerzel: kuerzelRein, display_name: kuerzelRein };
+          // Ein gescannter Lehrer-Code meint immer die Wandstation.
+          st.current.quelle = 'wand';
           st.current.mode = 'checkout'; setResult(null); rerender(); refocus(); return;
         }
-        if (/^AKTION-RUECKGABE$/i.test(code)) { st.current = { lehrer: null, mode: 'return', slot: null }; setResult(null); rerender(); refocus(); return; }
+        if (/^AKTION-RUECKGABE$/i.test(code)) { st.current = { lehrer: null, mode: 'return', slot: null, quelle: st.current.quelle }; setResult(null); rerender(); refocus(); return; }
         if (/^SLOT-/i.test(code)) {
           var r = slotToRange(code.toUpperCase());
           if (r) { st.current.slot = r; rerender(); } else { setResult({ ok: false, title: 'Fehler', text: 'Unbekannter Stunden-Code.' }); }
@@ -1299,22 +1375,50 @@
         }
         // sonst: Koffer-Barcode → Aktion
         if (st.current.mode === 'return') { doReturn(code); return; }
-        if (!st.current.lehrer) { setResult({ ok: false, title: 'Erst Lehrer-Code', text: 'Bitte zuerst den Lehrer-Code scannen.' }); refocus(); return; }
-        doCheckout(st.current.lehrer.code, code);
+        var lehrerJetztFuerScan = aktiverLehrer();
+        if (!lehrerJetztFuerScan) {
+          setResult(st.current.quelle === 'selbst'
+            ? { ok: false, title: 'Kürzel fehlt', text: 'In deinem Profil ist kein Kürzel hinterlegt — bitte nachtragen lassen oder auf „Wandstation“ umschalten.' }
+            : { ok: false, title: 'Erst Lehrer-Code', text: 'Bitte zuerst den Lehrer-Code von der Wandliste scannen.' });
+          refocus(); return;
+        }
+        doCheckout(lehrerJetztFuerScan.code, code);
       };
 
       var s = st.current;
+      var lehrerJetzt = aktiverLehrer();
       var prompt = s.mode === 'return'
         ? 'Koffer scannen zum Zurückgeben'
-        : (!s.lehrer ? 'Lehrer-Code scannen' : (s.slot ? 'Koffer scannen' : 'Koffer scannen (oder Stunden-Code für Vorausbuchung)'));
+        : (!lehrerJetzt ? 'Lehrer-Code scannen' : (s.slot ? 'Koffer scannen' : 'Koffer scannen (oder Stunden-Code für Vorausbuchung)'));
 
       return e('div', { 'data-testid': 'station-view' },
-        e('div', { className: 'section-title' }, 'Wand-Station — Scannen'),
+        e('div', { className: 'section-title' }, 'Ausgabe & Rückgabe — Scannen'),
         e('div', { className: 'card' },
+          // Wer bucht? Auf dem eigenen iPad die angemeldete Person, an der
+          // Wandstation die Lehrkraft vom gescannten Code.
+          e('div', { className: 'btn-row', style: { marginBottom: '12px' }, 'data-testid': 'station-quelle' },
+            e('button', {
+              type: 'button', className: 'btn' + (s.quelle === 'selbst' ? '' : ' btn-ghost'),
+              disabled: !meinKuerzel, 'data-testid': 'station-quelle-selbst',
+              onClick: function () { st.current.quelle = 'selbst'; st.current.lehrer = null; setResult(null); rerender(); refocus(); }
+            }, '👤 Ich selbst' + (meinKuerzel ? ' (' + meinKuerzel + ')' : '')),
+            e('button', {
+              type: 'button', className: 'btn' + (s.quelle === 'wand' ? '' : ' btn-ghost'),
+              'data-testid': 'station-quelle-wand',
+              onClick: function () { st.current.quelle = 'wand'; setResult(null); rerender(); refocus(); }
+            }, '🏫 Wandstation')
+          ),
+          !meinKuerzel && e('div', { className: 'inline-note warn', 'data-testid': 'station-kein-kuerzel' },
+            'Für „Ich selbst“ fehlt in deinem Profil das Kürzel — bitte beim Admin nachtragen lassen.'),
+          s.quelle === 'wand' && !istAdmin && e('div', { className: 'inline-note' },
+            'Ohne Admin-Rechte nimmt der Server an der Wandstation nur dein eigenes Kürzel an.'),
           // Status-Chips (aktueller Schritt)
-          e('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' } },
-            e('span', { className: 'status-pill ' + (s.mode === 'return' ? 'ausgegeben' : (s.lehrer ? 'frei' : 'reserviert')), 'data-testid': 'station-mode' },
-              s.mode === 'return' ? '📥 Rückgabe' : (s.lehrer ? ('👩‍🏫 ' + (s.lehrer.display_name || s.lehrer.kuerzel)) : '① Lehrer-Code')),
+          e('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px', marginTop: '12px' } },
+            e('span', { className: 'status-pill ' + (s.mode === 'return' ? 'ausgegeben' : (lehrerJetzt ? 'frei' : 'reserviert')), 'data-testid': 'station-mode' },
+              s.mode === 'return' ? '📥 Rückgabe'
+                : (lehrerJetzt
+                    ? ('👩‍🏫 ' + (lehrerJetzt.display_name || lehrerJetzt.kuerzel) + (s.quelle === 'selbst' ? ' · angemeldet' : ''))
+                    : '① Lehrer-Code')),
             s.mode === 'checkout' && s.slot && e('span', { className: 'status-pill reserviert', 'data-testid': 'station-slot' }, '🕑 ' + s.slot.label),
             fastInput && e('span', { className: 'status-pill frei', title: 'Zeitabstand zwischen den Zeichen < 30 ms -- nur eine Anzeige, keine Sperre' }, '⚡ Scanner erkannt')
           ),
@@ -1347,7 +1451,9 @@
               className: 'btn btn-ghost', style: { marginTop: '10px' }, onClick: retryPending, 'data-testid': 'station-retry'
             }, '🔁 Erneut versuchen (gleicher Vorgang)')
           ),
-          e('div', { className: 'inline-note' }, 'Ablauf: ① Lehrer-Code  →  ② optional Stunde/Doppelstunde  →  ③ Koffer = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer. Kamera startet nur auf Knopfdruck.')
+          e('div', { className: 'inline-note', 'data-testid': 'station-ablauf' }, s.quelle === 'selbst'
+            ? 'Ablauf: ① optional Stunde/Doppelstunde  →  ② Koffer scannen = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer. Kamera startet nur auf Knopfdruck.'
+            : 'Ablauf: ① Lehrer-Code von der Wandliste  →  ② optional Stunde/Doppelstunde  →  ③ Koffer = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer. Kamera startet nur auf Knopfdruck.')
         )
       );
     }
@@ -1673,7 +1779,7 @@
               ),
               e('main', { className: 'content' },
                 tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, raster: raster, onChange: bump }),
-                tab === 'scannen' && e(StationView, { ds: ds, onChange: bump }),
+                tab === 'scannen' && e(StationView, { ds: ds, profile: profile, onChange: bump }),
                 tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey }),
                 tab === 'auslastung' && isAdmin && e(AuslastungView, { ds: ds })
               )

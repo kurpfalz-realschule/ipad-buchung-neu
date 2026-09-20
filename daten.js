@@ -7,18 +7,29 @@ window.KRS_MEDIEN = {
 
   // ── Physische Koffer / Medien (Barcode = Scan-Code am Koffer) ──
   // kapazitaet = Geraete je Koffer: iPad-Koffer 10, Laptop-Koffer 15.
+  //
+  // KOFFER-NUMMERN (Stand 20.09.2026, Entscheidung Norbert):
+  //   Die Nummer steckt im Barcode. Koffer 1 = iPads 1-10, Koffer 2 = 11-20,
+  //   ... Koffer 12 = 111-120 -- zusammen die 120 iPads der Schule. App und
+  //   Etikettendruck rechnen den Bereich aus Nummer x Kapazitaet aus; es gibt
+  //   dafuer bewusst KEINE eigene Spalte, die auseinanderlaufen koennte.
+  //
+  // STANDORTE: der Schluessel bleibt 'LZ' / '1OG' (pool_frei_pro_stunde
+  //   filtert exakt darauf), der Klartext ist:
+  //     LZ  = Lehrerzimmer      (NICHT Lernzentrum -- Korrektur 20.09.2026)
+  //     1OG = Kartenraum (1. OG)
   // Stand 19.09.2026, identisch mit koffer_physisch in Supabase. Fuer die
   // Verfuegbarkeit zaehlt weiterhin ein Koffer = eine buchbare Einheit;
   // kapazitaet wird nur fuer Auswertungen ("wie viele Geraete") gebraucht.
   KOFFER: [
-    // iPad-Koffer · Standort LZ (Lernzentrum)
+    // iPad-Koffer · Koffer 1-6 · Standort LZ = Lehrerzimmer · iPads 1-60
     { barcode: 'KOFFER-01', bezeichnung: 'iPad lila/weiß',     typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: 'iPad-Wagen (3 Koffer)' },
     { barcode: 'KOFFER-02', bezeichnung: 'iPad grün',          typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: '' },
     { barcode: 'KOFFER-03', bezeichnung: 'iPad gelb',          typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: '' },
     { barcode: 'KOFFER-04', bezeichnung: 'iPad braun',         typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: 'iPad-Wagen (2 Koffer)' },
     { barcode: 'KOFFER-05', bezeichnung: 'iPad grün/gelb',     typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: '' },
     { barcode: 'KOFFER-06', bezeichnung: 'iPad rot/braun',     typ: 'ipad_koffer', kapazitaet: 10, standort: 'LZ',  notiz: 'weißer Koffer' },
-    // iPad-Koffer · Standort 1. OG
+    // iPad-Koffer · Koffer 7-12 · Standort 1OG = Kartenraum (1. OG) · iPads 61-120
     { barcode: 'KOFFER-07', bezeichnung: 'iPad Silber',        typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
     { barcode: 'KOFFER-08', bezeichnung: 'iPad Rot',           typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
     { barcode: 'KOFFER-09', bezeichnung: 'iPad weiß',          typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
@@ -38,8 +49,9 @@ window.KRS_MEDIEN = {
   //  · App (index.html): Lehrer-Codes werden serverseitig aufgelöst
   //    (rpc_station_checkout); die Anzeige-Liste kommt nach Login aus
   //    der SECURITY-DEFINER-RPC get_kollegium_public() (public.users).
-  //  · Etiketten-Druck (etiketten.html): echte Liste lokal über die
-  //    NICHT eingecheckte Datei daten.local.js (siehe .gitignore).
+  //  · Etiketten-Druck (etiketten.html): die Wandliste kommt seit dem
+  //    20.09.2026 direkt aus get_kollegium_public() (nur mit Session) --
+  //    daten.local.js wird dafuer nicht mehr gebraucht.
   LEHRER: [
     { kuerzel: 'Ko', name: 'Demo-Admin' },  { kuerzel: 'L2', name: 'Lehrkraft B' },
     { kuerzel: 'L3', name: 'Lehrkraft C' }, { kuerzel: 'L4', name: 'Lehrkraft D' },

@@ -25,9 +25,21 @@
     .label .code { font-size: 11px; color: var(--muted); margin-top: 2px; letter-spacing: .5px; }
     .label.action { border-style: solid; border-color: var(--accent); }
     .hint { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+    .label .nr { display:inline-block; background: var(--accent); color:#fff; border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 800; margin-bottom: 4px; }
+    .label .bereich { font-size: 12px; font-weight: 700; color: var(--text); }
+    /* Wandliste Lehrkraefte: schmaler als die Koffer-Etiketten, damit ein
+       ganzes Kollegium auf wenige Seiten passt. */
+    .lehrer-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+    .lehrer-grid .label { padding: 8px; }
+    .lehrer-grid .label .name { font-size: 13px; }
+    .lehrer-grid .label .codes-row svg { height: 34px; }
+    .lehrer-grid .label .qr-box { width: 40px; height: 40px; }
+    body.nur-koffer #sec-lehrer { display: none; }
+    body.nur-lehrer #sec-koffer, body.nur-lehrer #sec-aktionen { display: none; }
     .warn { color: #b45309; background: #fef3c7; border: 1px solid #d97706; border-radius: 8px; padding: 8px 12px; font-size: 12px; }
     @media print {
       .toolbar, .hint, .warn { display: none !important; }
+      .lehrer-grid .label { border-color: #94a3b8; }
       body { background: #fff; }
       main { max-width: none; padding: 0; }
       .label { border-color: #94a3b8; }
@@ -43,6 +55,9 @@
   <div class="toolbar">
     <h1>🏷️ iPad-Buchung — Etiketten</h1>
     <span class="hint" id="status"></span>
+    <label><input type="radio" name="was" value="alles" checked> alles</label>
+    <label><input type="radio" name="was" value="koffer"> nur Koffer</label>
+    <label><input type="radio" name="was" value="lehrer"> nur Lehrerliste</label>
     <button onclick="window.print()">🖨️ Drucken</button>
   </div>
   <main id="root">
@@ -57,10 +72,15 @@
     // auseinander (Vertraege fuer Sonnet). daten.js bleibt nur Rueckfall,
     // falls die DB nicht erreichbar ist (z.B. offline geoeffnet), UND liefert
     // weiterhin die Aktions-/Stunden-Codes (die stehen nicht in der DB).
-    // Lehrer-Codes werden bewusst NICHT mehr gedruckt (Entscheidung E5,
-    // Sprint 1: die Station laeuft angemeldet, das eigene Kuerzel wird vom
-    // Client gesetzt -- Kuerzel-Etiketten an der Wand waeren nur ein
-    // unnoetiges Datenschutz-Risiko).
+    // 20.09.2026: Entscheidung E5 ist revidiert. Es gibt jetzt BEIDES --
+    //  · auf dem eigenen iPad ist man angemeldet und scannt nur den Koffer
+    //    (Station-Modus "Ich selbst"),
+    //  · an der Wand haengt zusaetzlich eine Lehrerliste mit Barcode
+    //    L-<Kuerzel>, damit die Wandstation ohne eigenes Geraet funktioniert.
+    // Die Liste kommt aus get_kollegium_public() (nur mit Session; anon hat
+    // kein EXECUTE) und enthaelt Name + Kuerzel -- bewusst so entschieden
+    // (Norbert, 20.09.2026). Sie enthaelt KEINE Mailadressen, keine IDs und
+    // keinerlei Schuelerdaten.
     var SUPABASE_URL = 'https://ooejsfixxiuobrpqgfqm.supabase.co';
     var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9vZWpzZml4eGl1b2JycHFnZnFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMjQ5MDYsImV4cCI6MjA4OTYwMDkwNn0.GbAv-sB4B8nNE3IPfiYIjbkMKs0Aq03c_-TUcmFY_5s';
 
@@ -68,10 +88,27 @@
     var root = document.getElementById('root');
     var statusEl = document.getElementById('status');
 
-    function label(value, name, sub, isAction) {
+    // Standort-Klartext. Der Schluessel bleibt 'LZ'/'1OG'; Korrektur
+    // 20.09.2026: LZ = Lehrerzimmer (nicht Lernzentrum), 1OG = Kartenraum.
+    var STANDORT_LABEL = { LZ: 'Lehrerzimmer', '1OG': 'Kartenraum (1. OG)' };
+    function standortLabel(x) { return STANDORT_LABEL[x] || x || ''; }
+    // Koffer 1 = iPads 1-10 ... Koffer 12 = 111-120. Nummer aus dem Barcode,
+    // Bereich aus Nummer x Kapazitaet -- keine zweite Datenquelle.
+    function kofferNummer(k) {
+      var m = /^KOFFER-0*(\d+)$/i.exec((k && k.barcode) || '');
+      return m ? Number(m[1]) : null;
+    }
+    function bereichText(k) {
+      var nr = kofferNummer(k), cap = Number(k && k.kapazitaet) || 0;
+      if (!nr || cap < 2 || (k.typ && k.typ !== 'ipad_koffer')) return '';
+      return 'iPads ' + ((nr - 1) * cap + 1) + '\u2013' + (nr * cap);
+    }
+    function label(value, name, sub, isAction, nr, bereich) {
       var div = document.createElement('div');
       div.className = 'label' + (isAction ? ' action' : '');
+      if (nr != null) { var b = document.createElement('div'); b.className = 'nr'; b.textContent = 'Koffer ' + nr; div.appendChild(b); }
       var h = document.createElement('div'); h.className = 'name'; h.textContent = name; div.appendChild(h);
+      if (bereich) { var br = document.createElement('div'); br.className = 'bereich'; br.textContent = bereich; div.appendChild(br); }
       var s = document.createElement('div'); s.className = 'sub'; s.textContent = sub || ''; div.appendChild(s);
       var row = document.createElement('div'); row.className = 'codes-row'; div.appendChild(row);
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); row.appendChild(svg);
@@ -93,39 +130,65 @@
       } catch (err2) { /* QR optional -- CODE128 traegt den Druck allein, falls QR scheitert */ }
       return div;
     }
-    function section(title, hintText) {
-      var h = document.createElement('h2'); h.textContent = title; root.appendChild(h);
-      if (hintText) { var p = document.createElement('p'); p.className = 'hint'; p.textContent = hintText; root.appendChild(p); }
-      var g = document.createElement('div'); g.className = 'grid'; root.appendChild(g); return g;
+    function section(title, hintText, id, gridClass) {
+      var wrap = document.createElement('div');
+      if (id) wrap.id = id;
+      var h = document.createElement('h2'); h.textContent = title; wrap.appendChild(h);
+      if (hintText) { var p = document.createElement('p'); p.className = 'hint'; p.textContent = hintText; wrap.appendChild(p); }
+      var g = document.createElement('div'); g.className = gridClass || 'grid'; wrap.appendChild(g);
+      root.appendChild(wrap);
+      return g;
     }
 
-    function render(koffer, quelle) {
+    function render(koffer, quelle, lehrer) {
       root.innerHTML = '';
       if (quelle === 'fallback') {
-        var w = document.createElement('div'); w.className = 'warn';
+        var w = document.createElement('div'); w.className = 'warn'; w.setAttribute('data-testid', 'warn-db');
         w.textContent = '⚠️ Datenbank nicht erreichbar -- Etiketten aus der lokalen Datei daten.js (kann veraltet sein). Bitte vor dem Anbringen mit dem tatsaechlichen Bestand abgleichen.';
         root.appendChild(w);
       }
 
       // 1 . Koffer (aus der DB, nur aktive -- stillgelegte Dubletten damit
       // automatisch draussen)
-      var g1 = section('Koffer / Geräte (am Koffer anbringen)');
+      var g1 = section('Koffer / Geräte (am Koffer anbringen)',
+        'Koffer 1 = iPads 1–10, Koffer 2 = 11–20 … Koffer 12 = 111–120.', 'sec-koffer');
       koffer.forEach(function (k) {
         var teile = [];
-        if (k.standort) teile.push(k.standort);
-        if (k.kapazitaet > 1) teile.push(k.kapazitaet + ' Geräte');
+        if (k.standort) teile.push(standortLabel(k.standort));
+        if (!bereichText(k) && k.kapazitaet > 1) teile.push(k.kapazitaet + ' Geräte');
         if (k.notiz) teile.push(k.notiz);
-        g1.appendChild(label(k.barcode, k.bezeichnung, teile.join(' · ')));
+        g1.appendChild(label(k.barcode, k.bezeichnung, teile.join(' · '), false, kofferNummer(k), bereichText(k)));
       });
 
       // 2 . Aktions- & Stunden-Codes (kommen weiterhin aus daten.js -- reine
       // Ablauf-Steuercodes, kein Personenbezug, keine DB-Tabelle noetig)
-      var g2 = section('Aktions- & Stunden-Codes (an der Wand)', 'Rückgabe und Last-Minute-Buchung für aktuelle/nächste Stunde oder Doppelstunde.');
+      var g2 = section('Aktions- & Stunden-Codes (an der Wand)', 'Rückgabe und Last-Minute-Buchung für aktuelle/nächste Stunde oder Doppelstunde.', 'sec-aktionen');
       (M.AKTIONEN || []).forEach(function (a) { g2.appendChild(label(a.code, (a.icon ? a.icon + ' ' : '') + a.label, a.sub, true)); });
       (M.SLOTS || []).forEach(function (sl) { g2.appendChild(label(sl.code, sl.label, sl.sub || 'feste Stunde', true)); });
 
+      // 3 . Lehrerliste zum Aushaengen. Der Barcode traegt "L-<Kuerzel>";
+      // getippt nimmt die App auch das blanke Kuerzel an, und der Server
+      // schneidet das Praefix ohnehin ab.
+      var lehrerListe = (lehrer || []).filter(function (u) { return u.kuerzel && String(u.kuerzel).trim(); });
+      lehrerListe.sort(function (a, b) {
+        return String(a.display_name || a.kuerzel).localeCompare(String(b.display_name || b.kuerzel), 'de');
+      });
+      if (lehrerListe.length) {
+        var g3 = section('Lehrerliste (an der Wand aushängen)',
+          'Wandstation: erst den eigenen Code scannen, dann den Koffer. Auf dem eigenen iPad entfällt dieser Schritt — dort ist man bereits angemeldet.',
+          'sec-lehrer', 'lehrer-grid');
+        lehrerListe.forEach(function (u) {
+          g3.appendChild(label('L-' + u.kuerzel, u.display_name || u.kuerzel, u.kuerzel));
+        });
+      } else {
+        var w2 = document.createElement('div'); w2.className = 'warn'; w2.setAttribute('data-testid', 'warn-lehrer');
+        w2.textContent = '⚠️ Keine Lehrerliste geladen — ohne angemeldete Sitzung liefert get_kollegium_public() nichts. Bitte in KRS Connect anmelden und neu laden.';
+        root.appendChild(w2);
+      }
+
       statusEl.textContent = koffer.length + ' Koffer-Etiketten (' + (quelle === 'db' ? 'aus der Datenbank' : 'Rückfall daten.js') + ') · ' +
-        ((M.AKTIONEN || []).length + (M.SLOTS || []).length) + ' Aktions-Codes';
+        ((M.AKTIONEN || []).length + (M.SLOTS || []).length) + ' Aktions-Codes · ' +
+        lehrerListe.length + ' Lehrer-Codes';
     }
 
     function fallbackAusDatenJs() {
@@ -141,12 +204,24 @@
         root.innerHTML = '<p class="hint">Bitte zuerst in KRS Connect anmelden — diese Seite nutzt dieselbe Sitzung. Danach neu laden.</p>';
         return;
       }
-      return client.from('koffer_physisch').select('*').eq('aktiv', true).order('typ').order('barcode')
-        .then(function (r) {
-          if (r.error || !r.data || !r.data.length) { fallbackAusDatenJs(); return; }
-          render(r.data, 'db');
-        });
+      return Promise.all([
+        client.from('koffer_physisch').select('*').eq('aktiv', true).order('typ').order('barcode'),
+        client.rpc('get_kollegium_public')
+      ]).then(function (rs) {
+        var rk = rs[0], rl = rs[1];
+        if (rk.error || !rk.data || !rk.data.length) { fallbackAusDatenJs(); return; }
+        render(rk.data, 'db', (!rl.error && rl.data) ? rl.data : null);
+      });
     }).catch(function () { fallbackAusDatenJs(); });
+    // Druckauswahl: steuert nur die Sichtbarkeit der Sektionen (CSS),
+    // an den Etiketten selbst aendert sie nichts.
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="was"]'), function (r) {
+      r.addEventListener('change', function () {
+        document.body.classList.remove('nur-koffer', 'nur-lehrer');
+        if (r.value === 'koffer') document.body.classList.add('nur-koffer');
+        if (r.value === 'lehrer') document.body.classList.add('nur-lehrer');
+      });
+    });
   })();
   </script>
 </body>
