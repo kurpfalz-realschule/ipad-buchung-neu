@@ -172,6 +172,13 @@
 
     .mode-banner { font-size: 11px; text-align: center; padding: 4px; color: var(--text-muted); background: var(--bg-tertiary); }
 
+    /* Die Scanner-Bibliothek misst den Zielbereich beim Start. Deshalb besitzt
+       die Vorschau schon vorher eine echte, auf dem iPad stabile Größe. */
+    .station-cam-region { width: 100%; max-width: 480px; min-height: 240px; aspect-ratio: 4 / 3;
+      margin: 10px auto 0; border-radius: 8px; overflow: hidden; background: #0f172a; }
+    .station-cam-region video { width: 100% !important; height: 100% !important; object-fit: cover; }
+    .station-cam-region img, .station-cam-region canvas { max-width: 100%; }
+
     /* ── S1: Auslastungs-Ansicht ── */
     .zeitraum-switch { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
     .zeitraum-btn { flex: 1; min-width: 110px; min-height: 40px; border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -238,7 +245,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.5.0'; // 20.09.2026: Standort-Klartext (LZ = Lehrerzimmer, 1OG = Kartenraum), Koffer-Nummern 1-12 mit iPad-Bereich, Kuerzel als Lehrer-Code, Station-Modus „Ich selbst“, Koffer-Etiketten auf Zweckform 3481
+    window.KRS_BUCHUNG_VERSION = '1.5.2'; // 22.09.2026: Sprint-Fixes (siehe HANDOVER.md)
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -1013,7 +1020,7 @@
       var [modus, setModus] = useState('pool');
       var [poolTyp, setPoolTyp] = useState('ipad_koffer');
       var [poolStandort, setPoolStandort] = useState('LZ');
-      var [poolAnzahl, setPoolAnzahl] = useState(1);
+      var [poolAnzahl, setPoolAnzahl] = useState('1'); // S3: als String -- leeres Feld waehrend des Tippens erlauben (siehe res-pool-anzahl unten)
       var [kapaInfo, setKapaInfo] = useState(null);
 
       var reload = useCallback(function () {
@@ -1056,9 +1063,12 @@
       var submitPool = useCallback(function () {
         if (!poolTyp || !poolStandort) { showToast('Bitte Gerätetyp und Standort wählen.', 'error'); return; }
         if (bis < von) { showToast('„Bis"-Stunde muss ≥ „Von"-Stunde sein.', 'error'); return; }
-        if (!poolAnzahl || poolAnzahl < 1) { showToast('Bitte eine gültige Anzahl angeben.', 'error'); return; }
+        var poolAnzahlZahl = Math.max(1, parseInt(poolAnzahl, 10) || 1);
+        var poolAnzahlMax = (kapaInfo && kapaInfo.frei > 0) ? kapaInfo.frei : null;
+        if (poolAnzahlMax && poolAnzahlZahl > poolAnzahlMax) poolAnzahlZahl = poolAnzahlMax;
+        if (!poolAnzahlZahl || poolAnzahlZahl < 1) { showToast('Bitte eine gültige Anzahl angeben.', 'error'); return; }
         setSaving(true);
-        ds.reservierePool({ pool_typ: poolTyp, pool_standort: poolStandort, datum: datum, stunde_von: Number(von), stunde_bis: Number(bis), anzahl: Number(poolAnzahl), zweck: zweck })
+        ds.reservierePool({ pool_typ: poolTyp, pool_standort: poolStandort, datum: datum, stunde_von: Number(von), stunde_bis: Number(bis), anzahl: poolAnzahlZahl, zweck: zweck })
           .then(function () {
             showToast('Reservierung gespeichert.', 'success');
             setZweck('');
@@ -1107,8 +1117,27 @@
             e('div', { className: 'field' },
               e('label', null, 'Anzahl'),
               e('input', {
-                type: 'number', min: 1, step: 1, value: poolAnzahl, 'data-testid': 'res-pool-anzahl',
-                onChange: function (ev) { setPoolAnzahl(Math.max(1, Number(ev.target.value) || 1)); }
+                type: 'number', min: 1, step: 1, inputMode: 'numeric',
+                max: (kapaInfo && kapaInfo.frei > 0) ? kapaInfo.frei : undefined,
+                value: poolAnzahl, 'data-testid': 'res-pool-anzahl',
+                // S3 (21.09.2026, R4): NICHT mehr bei jedem Tastendruck auf >=1
+                // klemmen -- das loeschte die "1" sofort wieder, man musste
+                // "12" tippen und die Eins hinterher entfernen. Waehrend des
+                // Tippens darf das Feld leer sein bzw. jede Ziffernfolge
+                // enthalten; erst beim Verlassen (onBlur) oder beim Absenden
+                // wird daraus eine gueltige Zahl.
+                onChange: function (ev) { setPoolAnzahl(ev.target.value); },
+                onBlur: function () {
+                  var n = parseInt(poolAnzahl, 10);
+                  var max = (kapaInfo && kapaInfo.frei > 0) ? kapaInfo.frei : null;
+                  if (!n || n < 1) { setPoolAnzahl('1'); return; }
+                  if (max && n > max) {
+                    setPoolAnzahl(String(max));
+                    showToast('Nur noch ' + max + ' Gerät' + (max === 1 ? '' : 'e') + ' verfügbar -- auf ' + max + ' gesetzt.', 'info');
+                    return;
+                  }
+                  setPoolAnzahl(String(n));
+                }
               })
             )
           ) : e('div', { className: 'field' },
@@ -1224,6 +1253,7 @@
       var [result, setResult] = useState(null);
       var [fastInput, setFastInput] = useState(false); // Timing-Heuristik: nur Anzeige, nie Sperre
       var [camActive, setCamActive] = useState(false);
+      var [camStarting, setCamStarting] = useState(false);
       var [camErr, setCamErr] = useState('');
       var st = useRef({ lehrer: null, mode: 'checkout', slot: null, quelle: 'selbst' });
       // S4 (20.09.2026): Zwei Wege zur Lehrkraft.
@@ -1310,23 +1340,42 @@
       var stopCamera = function () {
         var s2 = scannerRef.current;
         scannerRef.current = null;
+        setCamStarting(false);
         setCamActive(false);
-        if (s2) { s2.stop().then(function () { try { s2.clear(); } catch (ignore) {} }).catch(function () {}); }
+        if (s2) {
+          s2.stop().then(function () { try { s2.clear(); } catch (ignore) {} })
+            .catch(function () { try { s2.clear(); } catch (ignore2) {} });
+        }
       };
       var startCamera = function () {
+        if (scannerRef.current || camStarting) return;
         setCamErr('');
         if (typeof Html5Qrcode === 'undefined') { setCamErr('Kamera-Bibliothek konnte nicht geladen werden — bitte Code eintippen.'); return; }
         var qr = new Html5Qrcode('station-cam-region');
         scannerRef.current = qr;
-        qr.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 240, height: 240 } },
-          function onScan(decodedText) { stopCamera(); processCode(decodedText); },
-          function onFail() { /* kein Treffer in diesem Frame -- normal, kein Fehler */ }
-        ).then(function () { setCamActive(true); }).catch(function (err) {
-          scannerRef.current = null; setCamActive(false);
-          setCamErr('Kamera nicht verfügbar (' + ((err && err.message) || 'Zugriff verweigert') + ') — bitte Code eintippen oder scannen.');
-          refocus();
+        // Der Zielbereich muss VOR qr.start sichtbar und ausgemessen sein.
+        // Sonst erzeugt html5-qrcode auf iPad/Safari zwar einen Kamerastream,
+        // aber ein Video mit 0px bzw. ohne sichtbare Vorschau.
+        setCamStarting(true);
+        setCamActive(true);
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            if (scannerRef.current !== qr) return;
+            qr.start(
+              { facingMode: 'environment' },
+              { fps: 10, qrbox: { width: 240, height: 240 } },
+              function onScan(decodedText) { stopCamera(); processCode(decodedText); },
+              function onFail() { /* kein Treffer in diesem Frame -- normal, kein Fehler */ }
+            ).then(function () {
+              if (scannerRef.current === qr) setCamStarting(false);
+            }).catch(function (err) {
+              if (scannerRef.current !== qr) return;
+              scannerRef.current = null; setCamStarting(false); setCamActive(false);
+              try { qr.clear(); } catch (ignore) {}
+              setCamErr('Kamera nicht verfügbar (' + ((err && err.message) || 'Zugriff verweigert') + ') — bitte Code eintippen oder scannen.');
+              refocus();
+            });
+          });
         });
       };
       useEffect(function () { return function () { stopCamera(); }; }, []);
@@ -1434,13 +1483,25 @@
             ),
             e('button', {
               type: 'button', className: 'btn btn-ghost', style: { width: 'auto', minWidth: '44px', padding: '0 14px' },
+              disabled: busy || camStarting,
+              title: camActive ? 'Kamera stoppen' : 'Kamera starten',
+              'aria-label': camActive ? 'Kamera stoppen' : 'Kamera starten',
               onClick: function () { camActive ? stopCamera() : startCamera(); }, 'data-testid': 'station-cam-toggle'
             }, camActive ? '⏹' : '📷')
           ),
-          e('div', { id: 'station-cam-region', style: { display: camActive ? 'block' : 'none', marginTop: '10px', borderRadius: '8px', overflow: 'hidden', maxWidth: '320px' } }),
+          e('div', {
+            id: 'station-cam-region', className: 'station-cam-region',
+            style: { display: camActive ? 'block' : 'none' },
+            'data-testid': 'station-cam-region', 'aria-label': 'Kamera-Vorschau'
+          }),
+          camStarting && e('div', { className: 'inline-note', 'data-testid': 'station-cam-starting' }, 'Kamera wird gestartet …'),
           camErr && e('div', { className: 'inline-note warn', 'data-testid': 'station-cam-err' }, camErr),
           e('div', { className: 'btn-row', style: { marginTop: '10px' } },
-            e('button', { className: 'btn', disabled: busy, onClick: function () { processCode(input); }, 'data-testid': 'station-go' }, '↵ Scannen'),
+            e('button', {
+              className: 'btn', disabled: busy || camStarting || camActive,
+              onClick: function () { input.trim() ? processCode(input) : startCamera(); },
+              'data-testid': 'station-go'
+            }, camStarting ? 'Kamera startet …' : (camActive ? 'Kamera läuft …' : (input.trim() ? '↵ Code verwenden' : '📷 Scannen'))),
             e('button', { className: 'btn btn-ghost', onClick: function () { reset(false); setResult(null); refocus(); }, 'data-testid': 'station-reset' }, '✕ Abbrechen')
           ),
           result && e('div', { className: 'big-status ' + (result.ok ? 'ok' : 'err'), 'data-testid': 'station-result' },
