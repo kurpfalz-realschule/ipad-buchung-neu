@@ -37,6 +37,36 @@
     body.nur-koffer #sec-lehrer { display: none; }
     body.nur-lehrer #sec-koffer, body.nur-lehrer #sec-aktionen { display: none; }
     .warn { color: #b45309; background: #fef3c7; border: 1px solid #d97706; border-radius: 8px; padding: 8px 12px; font-size: 12px; }
+
+    /* ══ Etikettenbogen Avery Zweckform 3481 ═════════════════════════
+       70 x 41 mm, 21 Etiketten je A4-Bogen, 3 Spalten x 7 Zeilen.
+       Waagerecht geht die Rechnung exakt auf: 3 x 70 mm = 210 mm = A4.
+       Senkrecht bleiben 297 - 7 x 41 = 10 mm uebrig, die als je 5 mm
+       oben und unten angenommen sind (die Etiketten liegen ohne Abstand
+       aneinander). Diese 5 mm sind AUS DER BOGENGROESSE GERECHNET, nicht
+       aus einem Datenblatt abgelesen -- deshalb der Testdruck und die
+       Justierung in Millimetern weiter unten.
+       ════════════════════════════════════════════════════════════════ */
+    .zf-sheet { width: 210mm; background: #fff; margin: 0 auto 12px; position: relative; overflow: hidden; }
+    .zf-inner { padding: 5mm 0; position: relative; }
+    .zf-grid { display: grid; grid-template-columns: repeat(3, 70mm); grid-auto-rows: 41mm; }
+    .zf-label { width: 70mm; height: 41mm; padding: 2.5mm 3mm; display: flex; flex-direction: column;
+                justify-content: space-between; align-items: center; text-align: center; overflow: hidden;
+                page-break-inside: avoid; break-inside: avoid; }
+    .zf-label.leer { background: repeating-linear-gradient(45deg, #f8fafc, #f8fafc 4px, #eef2f7 4px, #eef2f7 8px); }
+    .zf-kopf { display: flex; align-items: baseline; gap: 2mm; justify-content: center; }
+    .zf-nr { background: #111827; color: #fff; border-radius: 1.5mm; padding: 0.3mm 2mm; font-size: 11pt; font-weight: 800; line-height: 1.2; }
+    .zf-bereich { font-size: 10pt; font-weight: 700; }
+    .zf-sub { font-size: 7.5pt; color: #334155; line-height: 1.2; }
+    .zf-codes { display: flex; align-items: center; gap: 2mm; width: 100%; }
+    .zf-codes svg { flex: 1; min-width: 0; height: 13mm; }
+    .zf-qr { flex: none; width: 13mm; height: 13mm; }
+    .zf-qr canvas, .zf-qr img { width: 100% !important; height: 100% !important; }
+    .zf-code { font-size: 6.5pt; color: #475569; letter-spacing: .4px; }
+    /* Am Bildschirm Hilfslinien, im Druck nicht -- sonst klebt ein Rahmen mit. */
+    .zf-label { outline: 1px dashed #cbd5e1; outline-offset: -1px; }
+    body.zf #sec-koffer .grid { display: none; }
+    body:not(.zf) .zf-sheet { display: none; }
     @media print {
       .toolbar, .hint, .warn { display: none !important; }
       .lehrer-grid .label { border-color: #94a3b8; }
@@ -44,7 +74,19 @@
       main { max-width: none; padding: 0; }
       .label { border-color: #94a3b8; }
       h2 { page-break-after: avoid; }
+      /* Etikettenbogen: randlos und exakt EIN Bogen je Seite. Ohne das
+         page-break-after wuerden die Wand-Codes auf derselben Seite
+         weiterlaufen und der Bogen saesse nicht mehr im Raster. */
+      .zf-label { outline: none; }
+      .zf-sheet { margin: 0; width: 210mm; page-break-after: always; break-after: page; }
+      .zf-sheet + .zf-sheet { page-break-before: always; }
+      /* @page steht auf margin:0, damit die Etiketten bis an den Blattrand
+         reichen. Die Papierseiten brauchen ihren Rand deshalb selbst. */
+      #sec-aktionen, #sec-lehrer { padding: 12mm 10mm; }
+      body.zf #sec-koffer h2, body.zf #sec-koffer .hint { display: none !important; }
+      .zf-raster-test .zf-label { outline: 1px solid #94a3b8 !important; outline-offset: -1px; }
     }
+    @media print { @page { size: A4; margin: 0; } }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
@@ -58,6 +100,16 @@
     <label><input type="radio" name="was" value="alles" checked> alles</label>
     <label><input type="radio" name="was" value="koffer"> nur Koffer</label>
     <label><input type="radio" name="was" value="lehrer"> nur Lehrerliste</label>
+    <label>Koffer-Etiketten:
+      <select id="format">
+        <option value="zf3481" selected>Zweckform 3481 · 70 × 41 mm · 21/Blatt</option>
+        <option value="frei">Freies Raster (zum Ausschneiden)</option>
+      </select>
+    </label>
+    <label id="frei-wrap">Plätze freilassen: <input type="number" id="freilassen" min="0" max="20" step="1" value="0" style="width:56px"></label>
+    <label id="just-wrap">Justierung mm X <input type="number" id="offx" step="0.5" value="0" style="width:56px">
+      Y <input type="number" id="offy" step="0.5" value="0" style="width:56px"></label>
+    <label id="test-wrap"><input type="checkbox" id="rastertest"> Raster-Testdruck</label>
     <button onclick="window.print()">🖨️ Drucken</button>
   </div>
   <main id="root">
@@ -159,6 +211,13 @@
         if (k.notiz) teile.push(k.notiz);
         g1.appendChild(label(k.barcode, k.bezeichnung, teile.join(' · '), false, kofferNummer(k), bereichText(k)));
       });
+      // Zweiter Aufbau derselben Koffer als Etikettenbogen. Beide Fassungen
+      // stehen im DOM; welche sichtbar (und gedruckt) wird, entscheidet die
+      // Klasse 'zf' am body -- so bleibt der Wechsel ohne Neuladen moeglich.
+      KOFFER_CACHE = koffer;
+      var host = document.createElement('div'); host.id = 'zf-host';
+      g1.parentNode.appendChild(host);
+      zeichneBogen();
 
       // 2 . Aktions- & Stunden-Codes (kommen weiterhin aus daten.js -- reine
       // Ablauf-Steuercodes, kein Personenbezug, keine DB-Tabelle noetig)
@@ -196,6 +255,122 @@
       render(koffer, 'fallback');
     }
 
+    // ══ Etikettenbogen Avery Zweckform 3481 ═══════════════════════
+    // 70 x 41 mm, 3 Spalten x 7 Zeilen = 21 Etiketten je A4-Bogen.
+    // Nur die KOFFER kommen auf Etiketten -- die werden geklebt. Aktions-,
+    // Stunden- und Lehrer-Codes haengen an der Wand und bleiben auf Papier.
+    var ZF = { spalten: 3, zeilen: 7 };
+    var KOFFER_CACHE = [];
+
+    function el(tag, cls, text) {
+      var d = document.createElement(tag);
+      if (cls) d.className = cls;
+      if (text != null) d.textContent = text;
+      return d;
+    }
+
+    function zfEtikett(k) {
+      var d = el('div', 'zf-label');
+      var kopf = el('div', 'zf-kopf');
+      var nr = kofferNummer(k);
+      if (nr != null) kopf.appendChild(el('span', 'zf-nr', 'Koffer ' + nr));
+      var bereich = bereichText(k);
+      kopf.appendChild(el('span', 'zf-bereich', bereich || k.bezeichnung));
+      d.appendChild(kopf);
+
+      var teile = [];
+      if (bereich) teile.push(k.bezeichnung);
+      if (k.standort) teile.push(standortLabel(k.standort));
+      if (!bereich && k.kapazitaet > 1) teile.push(k.kapazitaet + ' Ger\u00e4te');
+      d.appendChild(el('div', 'zf-sub', teile.join(' \u00b7 ')));
+
+      var codes = el('div', 'zf-codes');
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      codes.appendChild(svg);
+      var qr = el('div', 'zf-qr');
+      codes.appendChild(qr);
+      d.appendChild(codes);
+      d.appendChild(el('div', 'zf-code', k.barcode));
+
+      try { if (window.JsBarcode) window.JsBarcode(svg, k.barcode, { format: 'CODE128', displayValue: false, margin: 0, height: 60 }); }
+      catch (e) { /* Klartext unter dem Etikett traegt den Druck notfalls allein */ }
+      try {
+        if (window.QRCode && window.QRCode.toCanvas) {
+          var c = document.createElement('canvas'); qr.appendChild(c);
+          window.QRCode.toCanvas(c, k.barcode, { width: 160, margin: 0 }, function (err) { if (err) qr.textContent = ''; });
+        }
+      } catch (e2) { /* QR ist die Zugabe, CODE128 der Pflichtteil */ }
+      return d;
+    }
+
+    function zeichneBogen() {
+      var host = document.getElementById('zf-host');
+      if (!host) return;
+      host.innerHTML = '';
+      var proBogen = ZF.spalten * ZF.zeilen;
+      var freilassen = Math.max(0, Math.min(proBogen - 1, Number(document.getElementById('freilassen').value) || 0));
+      var offx = Number(document.getElementById('offx').value) || 0;
+      var offy = Number(document.getElementById('offy').value) || 0;
+      var test = document.getElementById('rastertest').checked;
+
+      // Erst die freizulassenden Plaetze (angebrochener Bogen), dann die Koffer.
+      var plaetze = [];
+      for (var f = 0; f < freilassen; f++) plaetze.push(null);
+      KOFFER_CACHE.forEach(function (k) { plaetze.push(k); });
+
+      for (var i = 0; i < plaetze.length; i += proBogen) {
+        var bogen = el('div', 'zf-sheet' + (test ? ' zf-raster-test' : ''));
+        var inner = el('div', 'zf-inner');
+        inner.style.left = offx + 'mm';
+        inner.style.top = offy + 'mm';
+        var grid = el('div', 'zf-grid');
+        plaetze.slice(i, i + proBogen).forEach(function (k) {
+          grid.appendChild(k ? zfEtikett(k) : el('div', 'zf-label leer'));
+        });
+        inner.appendChild(grid);
+        bogen.appendChild(inner);
+        host.appendChild(bogen);
+      }
+    }
+
+    function formatAnwenden() {
+      var zf = document.getElementById('format').value === 'zf3481';
+      document.body.classList.toggle('zf', zf);
+      ['frei-wrap', 'just-wrap', 'test-wrap'].forEach(function (id) {
+        document.getElementById(id).style.display = zf ? '' : 'none';
+      });
+      try { localStorage.setItem('krs-etiketten', JSON.stringify({
+        format: document.getElementById('format').value,
+        offx: document.getElementById('offx').value,
+        offy: document.getElementById('offy').value
+      })); } catch (e) { /* Privatmodus o. ae. -- die Einstellung ist nur Bequemlichkeit */ }
+      zeichneBogen();
+    }
+
+    // Zuletzt benutzte Justierung wiederherstellen (pro Browser, pro Drucker).
+    try {
+      var gespeichert = JSON.parse(localStorage.getItem('krs-etiketten') || '{}');
+      if (gespeichert.format) document.getElementById('format').value = gespeichert.format;
+      if (gespeichert.offx != null) document.getElementById('offx').value = gespeichert.offx;
+      if (gespeichert.offy != null) document.getElementById('offy').value = gespeichert.offy;
+    } catch (e) { /* ohne gespeicherte Werte bleiben die Vorgaben */ }
+
+    ['format', 'freilassen', 'offx', 'offy', 'rastertest'].forEach(function (id) {
+      document.getElementById(id).addEventListener('change', formatAnwenden);
+      document.getElementById(id).addEventListener('input', formatAnwenden);
+    });
+    formatAnwenden();
+
+    // Druckauswahl: steuert nur die Sichtbarkeit der Sektionen (CSS),
+    // an den Etiketten selbst aendert sie nichts.
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="was"]'), function (r) {
+      r.addEventListener('change', function () {
+        document.body.classList.remove('nur-koffer', 'nur-lehrer');
+        if (r.value === 'koffer') document.body.classList.add('nur-koffer');
+        if (r.value === 'lehrer') document.body.classList.add('nur-lehrer');
+      });
+    });
+
     if (!window.supabase) { fallbackAusDatenJs(); return; }
     var client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     client.auth.getSession().then(function (res) {
@@ -213,15 +388,6 @@
         render(rk.data, 'db', (!rl.error && rl.data) ? rl.data : null);
       });
     }).catch(function () { fallbackAusDatenJs(); });
-    // Druckauswahl: steuert nur die Sichtbarkeit der Sektionen (CSS),
-    // an den Etiketten selbst aendert sie nichts.
-    Array.prototype.forEach.call(document.querySelectorAll('input[name="was"]'), function (r) {
-      r.addEventListener('change', function () {
-        document.body.classList.remove('nur-koffer', 'nur-lehrer');
-        if (r.value === 'koffer') document.body.classList.add('nur-koffer');
-        if (r.value === 'lehrer') document.body.classList.add('nur-lehrer');
-      });
-    });
   })();
   </script>
 </body>

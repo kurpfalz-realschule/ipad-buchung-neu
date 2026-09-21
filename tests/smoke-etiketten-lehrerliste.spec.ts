@@ -40,6 +40,11 @@ test('S3: Koffer-Etiketten und Lehrerliste aus der Datenbank', async ({ page }) 
   });
 
   await page.goto('/etiketten.html');
+  // Voreinstellung ist der Zweckform-Bogen; der hat einen eigenen Test
+  // (smoke-etiketten-zweckform.spec.ts). Hier geht es um den INHALT, deshalb
+  // wird auf das freie Raster umgeschaltet -- im Bogen-Modus ist es verborgen.
+  await page.waitForSelector('.zf-sheet .zf-label');
+  await page.selectOption('#format', 'frei');
   await page.waitForSelector('#sec-koffer .label');
 
   // Koffer-Etikett: Nummer, Farbe, iPad-Bereich, Raum im Klartext

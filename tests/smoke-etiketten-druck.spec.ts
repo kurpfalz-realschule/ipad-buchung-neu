@@ -17,6 +17,9 @@ test('S3: Etiketten-Rueckfall (kein Supabase erreichbar) + Druck-CSS', async ({ 
   await page.goto('/etiketten.html');
   await page.waitForSelector('.warn');
 
+  // Voreinstellung ist der Etikettenbogen; fuer die Rueckfall-Pruefung des
+  // freien Rasters wird bewusst umgeschaltet.
+  await page.selectOption('#format', 'frei');
   const labelCount = await page.locator('.grid .label').count();
   expect(labelCount).toBeGreaterThan(0);
   await expect(page.getByTestId('warn-db')).toContainText('Datenbank nicht erreichbar');
