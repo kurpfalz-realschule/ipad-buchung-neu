@@ -36,7 +36,8 @@ test.describe('Sprint 3: Standort-Klartext und Koffer-Nummern', () => {
     await page.goto('/index.html?forceMode=demo&forceUser=Ko');
     await page.click('[data-testid="tab-bestand"]');
     const laptop = page.locator('[data-barcode="LAPTOP-01"]');
-    await expect(laptop).toContainText('Lehrerzimmer');
+    // seit 23.09.2026: nur 2 Laptopwagen, beide im PC-Raum
+    await expect(laptop).toContainText('PC-Raum');
     await expect(laptop).not.toContainText('iPads');
     await expect(laptop).toContainText('15 Geräte');
   });

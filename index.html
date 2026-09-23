@@ -141,7 +141,43 @@
       font-size: 12px; font-weight: 600;
     }
     .storno-btn:hover { background: var(--danger-bg); }
-    @media (max-width: 480px) { .buchung-item { flex-wrap: wrap; } .storno-btn { margin-left: 52px; } }
+    /* v1.6.0: Aktionen in eigener Zeile -- der Titel wird nicht mehr zerquetscht */
+    .buchung-item, .koffer-item { flex-wrap: wrap; }
+    .item-actions { flex-basis: 100%; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    .item-extra { flex-basis: 100%; padding-left: 52px; }
+    @media (max-width: 480px) { .item-extra { padding-left: 0; } }
+    .act-btn { min-height: 44px; padding: 8px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600;
+      border: 1px solid var(--border); background: var(--bg-card); color: var(--text); cursor: pointer; }
+    .act-btn.primary { background: var(--success); border-color: var(--success); color: #fff; }
+    .act-btn.danger { border-color: var(--danger); color: var(--danger); }
+    .act-btn:disabled { opacity: .5; }
+    .koffer-item .item-actions .act-btn { font-weight: 500; color: var(--text-muted); }
+    .koffer-item .item-actions .act-btn.primary { color: #fff; }
+    .standort-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap;
+      margin: 18px 2px 8px; font-size: 15px; font-weight: 700; }
+    .standort-head span { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+    .meldung-chip { font-size: 12px; background: var(--warning-bg); color: #92400e; padding: 6px 8px; border-radius: 6px;
+      display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 4px; }
+    .meldung-chip .act-btn { min-height: 36px; padding: 4px 10px; font-size: 12px; }
+    .ueberfaellig { color: var(--danger); font-weight: 700; }
+    .dlg-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: center;
+      justify-content: center; z-index: 200; padding: 16px; }
+    .dlg { background: var(--bg-card); border-radius: var(--radius); max-width: 460px; width: 100%; padding: 18px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25); max-height: 90vh; overflow: auto; }
+    .dlg h3 { font-size: 17px; margin-bottom: 8px; }
+    .dlg p { font-size: 14px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.45; }
+    .dlg .btn-row { margin-top: 12px; flex-wrap: wrap; }
+    .dlg .btn-row .btn { flex: 1; min-width: 140px; }
+    .btn.btn-danger { background: var(--danger); }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip-btn { min-height: 44px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--bg-tertiary); font-size: 13px; color: var(--text); cursor: pointer; }
+    .chip-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    /* Im Hub eingebettet: der Hub zeigt Titel und Avatar schon -- eigener Kopf
+       entfaellt (sonst doppelte Kopfzeile + Safe-Area-Luecke, Tabs verdeckt). */
+    .topbar { position: sticky; top: 0; z-index: 20; }
+    .topbar .header, .topbar .tabs { position: static; }
+    html.embedded .topbar .header { display: none; }
 
     .empty { text-align: center; padding: 32px 16px; color: var(--text-muted); }
     .empty .empty-icon { font-size: 40px; margin-bottom: 8px; }
@@ -245,7 +281,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.5.2'; // 22.09.2026: Sprint-Fixes (siehe HANDOVER.md)
+    window.KRS_BUCHUNG_VERSION = '1.6.0'; // 23.09.2026: Rueckgabe/Storno ohne window.confirm, Meldungen, Standorte, PC-Raum
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -406,9 +442,10 @@
         Object.keys(byKoffer).forEach(function (kid) {
           var ev = byKoffer[kid];
           if (ev.aktion !== 'checkout') return;
-          // Auto-Rückbuchung: wenn die zugehörige Buchung zeitlich vorbei ist → frei
-          var b = ev.buchung_id ? self._buchungen.find(function (x) { return x.id === ev.buchung_id; }) : null;
-          if (b && !bookingActive(b, now)) return;
+          // v1.6.0: wie der Server -- ein abgeholter Koffer bleibt "ausgegeben",
+          // bis er zurueckgegeben wird (Scan oder Knopf "Zurueckgeben"). Frueher
+          // gab die Demo ihn nach Stundenende still frei; das verdeckte genau
+          // den Fehler, den Norbert am 23.09. auf dem iPhone sah.
           open[kid] = true;
         });
         return Promise.resolve(open);
@@ -467,6 +504,7 @@
     DataService.prototype.createBuchung = function (payload) {
       var self = this;
       if (this.isDemo) {
+        if (stundeVorbei(payload.datum, payload.stunde_bis)) return Promise.reject(makeErr('zeit_vorbei'));
         return this.checkKapazitaet(payload.koffer_id, payload.datum, payload.stunde_von, payload.stunde_bis)
           .then(function (frei) {
             if (!frei) throw makeErr('kapazitaet_belegt');
@@ -498,7 +536,7 @@
     DataService.prototype.checkKapazitaetPool = function (typ, standort, datum, von, bis, excludeBuchungId) {
       var self = this;
       if (this.isDemo) {
-        var pool = self._koffer.filter(function (k) { return k.aktiv && k.typ === typ && k.standort === standort; });
+        var pool = self._koffer.filter(function (k) { return einsatzbereit(k) && k.typ === typ && k.standort === standort; });
         var bestand = pool.length;
         var poolIds = {};
         pool.forEach(function (k) { poolIds[k.id] = true; });
@@ -544,6 +582,7 @@
         if (!payload.pool_typ || !payload.pool_standort) return Promise.reject(makeErr('invalid_pool'));
         if (!payload.anzahl || payload.anzahl < 1) return Promise.reject(makeErr('invalid_anzahl'));
         if (payload.stunde_bis < payload.stunde_von) return Promise.reject(makeErr('invalid_range'));
+        if (stundeVorbei(payload.datum, payload.stunde_bis)) return Promise.reject(makeErr('zeit_vorbei'));
         return this.checkKapazitaetPool(payload.pool_typ, payload.pool_standort, payload.datum, payload.stunde_von, payload.stunde_bis)
           .then(function (info) {
             if (!info.bestand) throw makeErr('pool_leer', payload.pool_typ + '/' + payload.pool_standort);
@@ -568,17 +607,129 @@
       }).then(function (r) { if (r.error) throw r.error; return r.data; });
     };
 
-    // ── Stornieren ──
+    // ── Stornieren (v1.6.0: RPC prueft Eigentum/Admin + Status serverseitig) ──
     DataService.prototype.stornoBuchung = function (id) {
+      var self = this;
       if (this.isDemo) {
         var b = this._buchungen.find(function (x) { return x.id === id; });
-        if (b) b.status = 'storniert';
-        return Promise.resolve(true);
+        if (!b) return Promise.reject(makeErr('buchung_not_found', id));
+        if (b.status !== 'reserviert') return Promise.reject(makeErr('buchung_nicht_offen', b.status));
+        if (demoOffeneKoffer(this, id).length) return Promise.reject(makeErr('buchung_hat_ausgabe'));
+        b.status = 'storniert';
+        return Promise.resolve({ buchung_id: id, status: 'storniert' });
       }
-      var q = this.sb.from('buchungen').update({ status: 'storniert' }).eq('id', id);
-      if (this.user && this.user.id != null) q = q.eq('user_id', this.user.id); // Defense-in-Depth zusätzlich zu RLS
-      return q.then(function (r) { if (r.error) throw r.error; return true; });
+      return this.sb.rpc('rpc_buchung_stornieren', { p_buchung_id: id })
+        .then(function (r) { if (r.error) throw r.error; return r.data; });
     };
+
+    // ── Manuelle Rueckgabe ohne Scan (v1.6.0) ──
+    DataService.prototype.zurueckgeben = function (id) {
+      var self = this;
+      if (this.isDemo) {
+        var b = this._buchungen.find(function (x) { return x.id === id; });
+        if (!b) return Promise.reject(makeErr('buchung_not_found', id));
+        if (b.status !== 'ausgegeben') return Promise.reject(makeErr('buchung_nicht_ausgegeben', b.status));
+        var koffer = demoOffeneKoffer(this, id).map(function (kid) {
+          self._ausgaben.push({ id: ++self._seq, koffer_id: kid, buchung_id: id, user_id: (self.user && self.user.id) || 0,
+            aktion: 'return', ts: new Date().toISOString(), idempotency_key: 'manuell-' + uuid() });
+          return self._koffer.find(function (k) { return k.id === kid; });
+        });
+        b.status = 'zurueck';
+        return Promise.resolve({ buchung_id: id, koffer: koffer });
+      }
+      return this.sb.rpc('rpc_buchung_zurueckgeben', { p_buchung_id: id })
+        .then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+
+    // ── Admin: Buchung loeschen (bucht offene Koffer vorher zurueck) ──
+    DataService.prototype.loescheBuchung = function (id) {
+      var self = this;
+      if (this.isDemo) {
+        if (!this.user || (this.user.role !== 'admin' && this.user.role !== 'owner')) return Promise.reject(makeErr('not_authorized'));
+        demoOffeneKoffer(this, id).forEach(function (kid) {
+          self._ausgaben.push({ id: ++self._seq, koffer_id: kid, buchung_id: id, user_id: self.user.id,
+            aktion: 'return', ts: new Date().toISOString(), idempotency_key: 'admin-loeschen-' + uuid() });
+        });
+        this._buchungen = this._buchungen.filter(function (x) { return x.id !== id; });
+        return Promise.resolve({ buchung_id: id, geloescht: true });
+      }
+      return this.sb.rpc('rpc_buchung_loeschen', { p_buchung_id: id })
+        .then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+
+    // ── Admin: alle offenen Buchungen (reserviert/ausgegeben) ──
+    DataService.prototype.getOffeneBuchungenAlle = function () {
+      var self = this;
+      if (this.isDemo) {
+        return Promise.resolve(this._buchungen
+          .filter(function (b) { return b.status === 'reserviert' || b.status === 'ausgegeben'; })
+          .map(function (b) {
+            var u = Object.keys(LEHRER_BY_CODE).map(function (c) { return LEHRER_BY_CODE[c]; }).find(function (x) { return x.id === b.user_id; });
+            return Object.assign({}, b, { koffer: self._koffer.find(function (k) { return k.id === b.koffer_id; }),
+              user: u || (self.user && self.user.id === b.user_id ? self.user : null) });
+          })
+          .sort(function (a, b) { return (a.datum + String(a.stunde_von).padStart(2, '0')) < (b.datum + String(b.stunde_von).padStart(2, '0')) ? -1 : 1; }));
+      }
+      var sel = function (cols) {
+        return self.sb.from('buchungen').select(cols).in('status', ['reserviert', 'ausgegeben'])
+          .order('datum', { ascending: true }).order('stunde_von', { ascending: true });
+      };
+      return sel('*, koffer:koffer_physisch(*), user:users(kuerzel, display_name)').then(function (r) {
+        if (!r.error) return r.data || [];
+        return sel('*, koffer:koffer_physisch(*)').then(function (r2) { if (r2.error) throw r2.error; return r2.data || []; });
+      });
+    };
+
+    // ── Koffer-Meldungen (v1.6.0) ──
+    DataService.prototype.getMeldungen = function () {
+      if (this.isDemo) {
+        var admin = this.user && (this.user.role === 'admin' || this.user.role === 'owner');
+        var uid = this.user && this.user.id;
+        return Promise.resolve((this._meldungen || []).filter(function (m) { return m.status === 'offen'; }).map(function (m) {
+          return Object.assign({}, m, { text: (admin || m.user_id === uid) ? m.text : null, kuerzel: admin ? m.kuerzel : null });
+        }));
+      }
+      return this.sb.rpc('rpc_koffer_meldungen_offen').then(function (r) { if (r.error) throw r.error; return r.data || []; });
+    };
+    DataService.prototype.meldeKoffer = function (m) {
+      if (this.isDemo) {
+        this._meldungen = this._meldungen || [];
+        var row = { id: ++this._seq, koffer_id: m.koffer_id, buchung_id: m.buchung_id || null, art: m.art,
+          anzahl: m.anzahl || null, geraete: m.geraete || null, text: m.text || null, status: 'offen',
+          user_id: this.user && this.user.id, kuerzel: this.user && this.user.kuerzel, created_at: new Date().toISOString() };
+        this._meldungen.push(row);
+        return Promise.resolve({ id: row.id });
+      }
+      return this.sb.rpc('rpc_koffer_melden', {
+        p_koffer_id: m.koffer_id, p_art: m.art, p_anzahl: m.anzahl || null,
+        p_geraete: m.geraete || null, p_text: m.text || null, p_buchung_id: m.buchung_id || null
+      }).then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+    DataService.prototype.meldungErledigt = function (id) {
+      if (this.isDemo) {
+        var m = (this._meldungen || []).find(function (x) { return x.id === id; });
+        if (m) m.status = 'erledigt';
+        return Promise.resolve({ id: id });
+      }
+      return this.sb.rpc('rpc_koffer_meldung_erledigen', { p_id: id }).then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+    DataService.prototype.setAusserBetrieb = function (kofferId, flag, grund) {
+      if (this.isDemo) {
+        var k = this._koffer.find(function (x) { return x.id === kofferId; });
+        if (k) { k.ausser_betrieb = !!flag; k.ausser_betrieb_grund = flag ? (grund || null) : null; }
+        return Promise.resolve({ koffer_id: kofferId });
+      }
+      return this.sb.rpc('rpc_koffer_ausser_betrieb', { p_koffer_id: kofferId, p_ausser_betrieb: !!flag, p_grund: grund || null })
+        .then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+    // Demo: Koffer, die zu dieser Buchung noch draussen sind
+    function demoOffeneKoffer(ds, buchungId) {
+      var last = {};
+      ds._ausgaben.forEach(function (a) { if (!last[a.koffer_id] || a.id > last[a.koffer_id].id) last[a.koffer_id] = a; });
+      return Object.keys(last).map(Number).filter(function (kid) {
+        return last[kid].aktion === 'checkout' && last[kid].buchung_id === buchungId;
+      });
+    }
 
     // ── Checkout per Barcode (mirror rpc_checkout) ──
     DataService.prototype.checkout = function (barcode, idempotencyKey, buchungId) {
@@ -590,6 +741,7 @@
           var k = self._koffer.find(function (x) { return x.barcode === barcode; });
           if (!k) return reject(makeErr('koffer_not_found', barcode));
           if (!k.aktiv) return reject(makeErr('koffer_inactive', barcode));
+          if (k.ausser_betrieb) return reject(makeErr('koffer_ausser_betrieb', barcode));
           // bereits offen ausgegeben?
           var last = null;
           self._ausgaben.forEach(function (a) { if (a.koffer_id === k.id && (!last || a.id > last.id)) last = a; });
@@ -667,6 +819,7 @@
           var k = self._koffer.find(function (x) { return x.barcode === barcode; });
           if (!k) return reject(makeErr('koffer_not_found', barcode));
           if (!k.aktiv) return reject(makeErr('koffer_inactive', barcode));
+          if (k.ausser_betrieb) return reject(makeErr('koffer_ausser_betrieb', barcode));
           // Bereits ausgebucht: letztes Ausgabe-Ereignis fuer diesen Koffer ist ein offener Checkout
           // (spiegelt die dokumentierte Backend-Pruefung, zeitfensterunabhaengig - siehe KONTEXT.md 4.1 / S3).
           var lastAusgabe = null;
@@ -754,7 +907,7 @@
     // Postgres-RAISE-Message → Error mit code (erste :-getrennte Komponente)
     DataService.prototype._rpcErr = function (e) {
       var msg = (e && e.message) || 'fehler';
-      var m = msg.match(/(lehrer_unbekannt|koffer_not_found|koffer_inactive|already_checked_out|not_checked_out|kapazitaet_belegt|alles_belegt|not_authenticated)/);
+      var m = msg.match(/(lehrer_unbekannt|koffer_not_found|koffer_inactive|koffer_ausser_betrieb|already_checked_out|not_checked_out|kapazitaet_belegt|alles_belegt|not_authenticated|not_authorized)/);
       var err = new Error(msg); err.code = m ? m[1] : null; return err;
     };
 
@@ -930,7 +1083,14 @@
         pool_leer: 'Für diese Auswahl sind keine Geräte erfasst.',
         invalid_anzahl: 'Bitte eine gültige Anzahl angeben.',
         invalid_range: '„Bis"-Stunde muss ≥ „Von"-Stunde sein.',
-        invalid_pool: 'Bitte Gerätetyp und Standort wählen.'
+        invalid_pool: 'Bitte Gerätetyp und Standort wählen.',
+        zeit_vorbei: 'Diese Stunde ist schon vorbei — bitte eine spätere Stunde oder einen anderen Tag wählen.',
+        koffer_ausser_betrieb: 'Dieser Koffer ist außer Betrieb gemeldet.',
+        buchung_nicht_ausgegeben: 'Diese Buchung ist nicht (mehr) ausgegeben.',
+        buchung_nicht_offen: 'Diese Buchung kann nicht mehr storniert werden.',
+        buchung_hat_ausgabe: 'Es ist schon ein Koffer abgeholt — bitte „Zurückgeben" statt Stornieren.',
+        buchung_not_found: 'Diese Buchung gibt es nicht mehr.',
+        meldung_not_found: 'Diese Meldung ist schon erledigt.'
       };
       if (code === 'pool_kapazitaet_belegt') return detail || 'Nicht mehr genug Geräte frei.';
       return map[code] || ('Fehler: ' + (err && err.message ? err.message : 'unbekannt'));
@@ -963,43 +1123,290 @@
     // ════════════════════════════════════════════════════════════════
     // Views
     // ════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════
+    // Dialoge (v1.6.0) — ersetzt window.confirm: im Hub-iframe der iOS-App
+    // erschien der native Dialog nicht, "Stornieren" tat deshalb nichts
+    // (Supabase-Log 23.09.: kein einziger PATCH/RPC nach dem Tipp).
+    // ════════════════════════════════════════════════════════════════
+    var dialogListener = null;
+    function openDialog(spec) {
+      return new Promise(function (resolve) {
+        if (!dialogListener) { resolve(null); return; }
+        dialogListener({ spec: spec, resolve: resolve });
+      });
+    }
+    function confirmDialog(title, text, okLabel, danger) {
+      return openDialog({ kind: 'choice', title: title, text: text,
+        choices: [{ value: true, label: okLabel || 'OK', cls: danger ? 'btn btn-danger' : 'btn' }] })
+        .then(function (v) { return v === true; });
+    }
+    function DialogHost() {
+      var [cur, setCur] = useState(null);
+      useEffect(function () {
+        dialogListener = function (d) { setCur(d); };
+        return function () { dialogListener = null; };
+      }, []);
+      if (!cur) return null;
+      var close = function (v) { cur.resolve(v); setCur(null); };
+      var sp = cur.spec;
+      var body = sp.kind === 'meldung' ? e(MeldungForm, { spec: sp, close: close })
+        : sp.kind === 'text' ? e(TextForm, { spec: sp, close: close })
+        : e('div', null,
+            e('h3', null, sp.title),
+            sp.text && e('p', null, sp.text),
+            e('div', { className: 'btn-row' },
+              e('button', { className: 'btn btn-ghost', onClick: function () { close(null); }, 'data-testid': 'dlg-cancel' }, 'Abbrechen'),
+              (sp.choices || []).map(function (c, i) {
+                return e('button', { key: i, className: c.cls || 'btn', onClick: function () { close(c.value); },
+                  'data-testid': c.testid || 'dlg-ok' }, c.label);
+              })
+            ));
+      return e('div', { className: 'dlg-backdrop', role: 'dialog', 'aria-modal': 'true', 'data-testid': 'dialog',
+          onClick: function (ev) { if (ev.target === ev.currentTarget) close(null); } },
+        e('div', { className: 'dlg' }, body));
+    }
+    function TextForm(props) {
+      var sp = props.spec;
+      var [val, setVal] = useState(sp.value || '');
+      return e('div', null,
+        e('h3', null, sp.title),
+        sp.text && e('p', null, sp.text),
+        e('div', { className: 'field' },
+          e('input', { type: 'text', value: val, maxLength: 200, placeholder: sp.placeholder || '', autoFocus: true,
+            onChange: function (ev) { setVal(ev.target.value); }, 'data-testid': 'dlg-input' })),
+        e('div', { className: 'btn-row' },
+          e('button', { className: 'btn btn-ghost', onClick: function () { props.close(null); }, 'data-testid': 'dlg-cancel' }, 'Abbrechen'),
+          e('button', { className: 'btn', onClick: function () { props.close(val); }, 'data-testid': 'dlg-ok' }, sp.okLabel || 'OK')));
+    }
+    // Rueckmeldung zu einem Koffer: fehlende iPads, kaputte Geraete/Tastaturen …
+    function MeldungForm(props) {
+      var sp = props.spec;
+      var koffer = sp.koffer || [];
+      var [kofferId, setKofferId] = useState(koffer[0] ? String(koffer[0].id) : '');
+      var [art, setArt] = useState('fehlt');
+      var [anzahl, setAnzahl] = useState('1');
+      var [geraete, setGeraete] = useState('');
+      var [text, setText] = useState('');
+      var senden = function () {
+        if (!kofferId) { showToast('Bitte einen Koffer wählen.', 'error'); return; }
+        if (art === 'sonstiges' && !text.trim()) { showToast('Bitte kurz beschreiben, was los ist.', 'error'); return; }
+        var n = parseInt(anzahl, 10);
+        props.close({ koffer_id: Number(kofferId), art: art, anzahl: (n >= 1 && n <= 30) ? n : null,
+          geraete: geraete.trim().slice(0, 100), text: text.trim().slice(0, 500) });
+      };
+      return e('div', { 'data-testid': 'meldung-form' },
+        e('h3', null, sp.title || 'Problem melden'),
+        sp.text && e('p', null, sp.text),
+        koffer.length > 1 && e('div', { className: 'field' },
+          e('label', null, 'Koffer'),
+          e('select', { value: kofferId, onChange: function (ev) { setKofferId(ev.target.value); }, 'data-testid': 'meldung-koffer' },
+            koffer.map(function (k) { return e('option', { key: k.id, value: String(k.id) }, kofferTitel(k)); }))),
+        koffer.length === 1 && e('p', { style: { color: 'var(--text)', fontWeight: 600 } }, kofferTitel(koffer[0])),
+        e('div', { className: 'field' },
+          e('label', null, 'Was ist los?'),
+          e('div', { className: 'chip-row' }, Object.keys(MELDUNG_ART).map(function (a) {
+            return e('button', { key: a, type: 'button', className: 'chip-btn' + (art === a ? ' active' : ''),
+              'aria-pressed': art === a, 'data-testid': 'meldung-art-' + a, onClick: function () { setArt(a); } }, MELDUNG_ART[a]);
+          }))),
+        art !== 'sonstiges' && e('div', { className: 'field-row' },
+          e('div', { className: 'field' },
+            e('label', null, 'Anzahl'),
+            e('input', { type: 'number', min: 1, max: 30, inputMode: 'numeric', value: anzahl,
+              onChange: function (ev) { setAnzahl(ev.target.value); }, 'data-testid': 'meldung-anzahl' })),
+          e('div', { className: 'field' },
+            e('label', null, 'Geräte-Nr. (falls bekannt)'),
+            e('input', { type: 'text', value: geraete, maxLength: 100, placeholder: 'z. B. 14, 17',
+              onChange: function (ev) { setGeraete(ev.target.value); }, 'data-testid': 'meldung-geraete' }))),
+        e('div', { className: 'field' },
+          e('label', null, 'Bemerkung (optional)'),
+          e('input', { type: 'text', value: text, maxLength: 500, placeholder: 'z. B. Display gesprungen',
+            onChange: function (ev) { setText(ev.target.value); }, 'data-testid': 'meldung-text' }),
+          e('div', { className: 'inline-note' }, 'Bitte keine Schülernamen eintragen.')),
+        e('div', { className: 'btn-row' },
+          e('button', { className: 'btn btn-ghost', onClick: function () { props.close(null); }, 'data-testid': 'dlg-cancel' }, sp.cancelLabel || 'Abbrechen'),
+          e('button', { className: 'btn', onClick: senden, 'data-testid': 'meldung-senden' }, 'Meldung senden')));
+    }
+    // Meldung aufnehmen + senden (Formular -> RPC). koffer: Liste {id, barcode, bezeichnung}
+    function meldungErfassen(ds, koffer, extra) {
+      extra = extra || {};
+      return openDialog({ kind: 'meldung', koffer: koffer, title: extra.title, text: extra.text, cancelLabel: extra.cancelLabel })
+        .then(function (m) {
+          if (!m) return false;
+          m.buchung_id = extra.buchung_id || null;
+          return ds.meldeKoffer(m).then(function () { showToast('Danke — Meldung ist beim Admin.', 'success'); return true; });
+        })
+        .catch(function (err) { showToast(errMsg(err), 'error'); return false; });
+    }
+
+    // Eine Buchung mit ihren Aktionen (Meine Buchungen + Admin-Liste)
+    function BuchungItem(props) {
+      var b = props.b, ds = props.ds;
+      var [busy, setBusy] = useState(false);
+      var isPool = b.koffer_id == null;
+      var k = b.koffer || {};
+      var mainLabel = isPool
+        ? ((b.anzahl || 1) + '× ' + poolTypLabel(b.pool_typ) + ' · ' + poolStandortLabel(b.pool_standort))
+        : (k.bezeichnung ? kofferTitel(k) : ('Koffer #' + b.koffer_id));
+      var ueberfaellig = b.status === 'ausgegeben' && b.datum < todayISO();
+      var wer = props.showUser && b.user ? (b.user.kuerzel || b.user.display_name) : null;
+      var fertig = function (msg) { showToast(msg, 'success'); if (props.onDone) props.onDone(); };
+      var fehler = function (err) { showToast(errMsg(err), 'error'); };
+      var lauf = function (p) { setBusy(true); return p.then(function (x) { setBusy(false); return x; }, function (err) { setBusy(false); throw err; }); };
+
+      var storno = function () {
+        confirmDialog('Reservierung stornieren?', mainLabel + ' am ' + datumDE(b.datum) + ', ' + b.stunde_von + '.–' + b.stunde_bis + '. Std' + (wer ? ' (' + wer + ')' : ''), '✕ Stornieren', true)
+          .then(function (ok) { if (!ok) return; return lauf(ds.stornoBuchung(b.id)).then(function () { fertig('Reservierung storniert.'); }); })
+          .catch(fehler);
+      };
+      var rueckgabe = function () {
+        openDialog({ kind: 'choice', title: 'Zurückgeben', text: mainLabel + ' — ist alles vollständig und in Ordnung?',
+          choices: [
+            { value: 'problem', label: '⚠ Etwas fehlt / kaputt', cls: 'btn btn-ghost', testid: 'rueckgabe-problem' },
+            { value: 'ok', label: '✓ Alles vollständig', cls: 'btn btn-success', testid: 'rueckgabe-ok' }
+          ] })
+          .then(function (wahl) {
+            if (!wahl) return;
+            return lauf(ds.zurueckgeben(b.id)).then(function (res) {
+              fertig('Zurückgegeben — wieder im Bestand.');
+              var koffer = (res && res.koffer && res.koffer.length) ? res.koffer : (b.koffer ? [b.koffer] : []);
+              if (wahl === 'problem' && koffer.length) {
+                return meldungErfassen(ds, koffer, { buchung_id: b.id, title: 'Was fehlt oder ist kaputt?' })
+                  .then(function () { if (props.onDone) props.onDone(); });
+              }
+            });
+          })
+          .catch(fehler);
+      };
+      var loeschen = function () {
+        confirmDialog('Buchung endgültig löschen?', mainLabel + ' am ' + datumDE(b.datum) + (wer ? ' (' + wer + ')' : '') +
+          '. Noch ausgegebene Koffer werden dabei automatisch zurückgebucht.', '🗑 Löschen', true)
+          .then(function (ok) { if (!ok) return; return lauf(ds.loescheBuchung(b.id)).then(function () { fertig('Buchung gelöscht.'); }); })
+          .catch(fehler);
+      };
+
+      return e('div', { className: 'buchung-item', 'data-testid': props.testid || 'buchung-item', 'data-buchung-id': b.id },
+        e('div', { className: 'koffer-icon' }, b.status === 'ausgegeben' ? '📤' : '🗓️'),
+        e('div', { className: 'koffer-main' },
+          e('div', { className: 'name' }, mainLabel),
+          e('div', { className: 'meta' },
+            datumDE(b.datum) + ' · ' + b.stunde_von + '.–' + b.stunde_bis + '. Std' + (wer ? ' · ' + wer : '') + (b.zweck && b.zweck !== wer ? ' · ' + b.zweck : ''),
+            ueberfaellig && e('span', { className: 'ueberfaellig' }, ' · noch nicht zurück'))
+        ),
+        e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : b.status === 'zurueck' ? 'frei' : b.status === 'abgelaufen' ? 'abgelaufen' : 'reserviert') }, statusLabel(b.status)),
+        (b.status === 'reserviert' || b.status === 'ausgegeben' || props.admin) && e('div', { className: 'item-actions' },
+          b.status === 'reserviert' && e('button', { className: 'act-btn danger storno-btn', disabled: busy, onClick: storno,
+            'data-testid': 'buchung-storno', 'aria-label': 'Reservierung stornieren' }, '✕ Stornieren'),
+          b.status === 'ausgegeben' && e('button', { className: 'act-btn primary', disabled: busy, onClick: rueckgabe,
+            'data-testid': 'buchung-rueckgabe' }, '↩︎ Zurückgeben'),
+          props.admin && e('button', { className: 'act-btn danger', disabled: busy, onClick: loeschen,
+            'data-testid': 'buchung-loeschen' }, '🗑 Löschen')
+        )
+      );
+    }
+
+    // Bestand: nach Standort gruppiert, sortiert nach Koffer-Nummer.
+    // Archivierte Zeilen (aktiv = false, z. B. alte Dubletten) erscheinen nicht.
     function BestandView(props) {
-      var ds = props.ds;
+      var ds = props.ds, isAdmin = props.isAdmin;
       var [koffer, setKoffer] = useState([]);
       var [open, setOpen] = useState({});
+      var [meldungen, setMeldungen] = useState([]);
+      var [offeneBuchungen, setOffeneBuchungen] = useState([]);
       var [loading, setLoading] = useState(true);
 
       var reload = useCallback(function () {
-        setLoading(true);
         ds.autoReturnDue().then(function () {
-          return Promise.all([ds.getKoffer(), ds.getOffeneKofferIds()]);
+          return Promise.all([ds.getKoffer(), ds.getOffeneKofferIds(),
+            ds.getMeldungen().catch(function () { return []; }),
+            isAdmin ? ds.getOffeneBuchungenAlle().catch(function () { return []; }) : Promise.resolve([])]);
         }).then(function (res) {
-          setKoffer(res[0]); setOpen(res[1]); setLoading(false);
+          setKoffer(res[0]); setOpen(res[1]); setMeldungen(res[2] || []); setOffeneBuchungen(res[3] || []); setLoading(false);
         }).catch(function (err) { showToast(errMsg(err), 'error'); setLoading(false); });
-      }, [ds]);
+      }, [ds, isAdmin]);
       useEffect(reload, [reload, props.refreshKey]);
 
       if (loading) return e('div', { className: 'empty' }, e('p', null, 'Lädt Bestand …'));
-      if (!koffer.length) return e('div', { className: 'empty' },
+      var aktiv = koffer.filter(function (k) { return k.aktiv; }).sort(kofferSort);
+      if (!aktiv.length) return e('div', { className: 'empty' },
         e('div', { className: 'empty-icon' }, '📦'), e('p', null, 'Kein Bestand erfasst. Admin kann Koffer anlegen.'));
 
+      var gruppen = [];
+      aktiv.forEach(function (k) {
+        var key = k.typ === 'raum' ? '__raum' : (k.standort || '__ohne');
+        var g = gruppen.find(function (x) { return x.key === key; });
+        if (!g) { g = { key: key, titel: key === '__raum' ? 'Räume' : key === '__ohne' ? 'Ohne Standort' : standortLabel(k.standort), koffer: [] }; gruppen.push(g); }
+        g.koffer.push(k);
+      });
+      var meldungenVon = function (kid) { return meldungen.filter(function (m) { return m.koffer_id === kid; }); };
+
+      var toggleAusserBetrieb = function (k) {
+        var p = k.ausser_betrieb
+          ? confirmDialog('Wieder in Betrieb nehmen?', kofferTitel(k) + ' ist danach wieder buchbar.', '✓ In Betrieb')
+              .then(function (ok) { return ok ? { grund: null } : null; })
+          : openDialog({ kind: 'text', title: 'Außer Betrieb nehmen', text: kofferTitel(k) + ' wird nicht mehr zum Buchen angeboten.',
+              placeholder: 'Grund, z. B. 3 Akkus defekt', okLabel: 'Außer Betrieb' })
+              .then(function (v) { return v === null ? null : { grund: v }; });
+        p.then(function (r) {
+          if (!r) return;
+          return ds.setAusserBetrieb(k.id, !k.ausser_betrieb, r.grund).then(function () {
+            showToast(k.ausser_betrieb ? 'Wieder in Betrieb.' : 'Außer Betrieb gesetzt.', 'success'); reload();
+            if (props.onChange) props.onChange();
+          });
+        }).catch(function (err) { showToast(errMsg(err), 'error'); });
+      };
+      var erledigt = function (m) {
+        ds.meldungErledigt(m.id).then(function () { showToast('Meldung erledigt.', 'success'); reload(); })
+          .catch(function (err) { showToast(errMsg(err), 'error'); });
+      };
+
       return e('div', { 'data-testid': 'bestand-view' },
-        e('div', { className: 'section-title' }, 'Geräte-Bestand'),
-        koffer.map(function (k) {
-          var statusCls = !k.aktiv ? 'inaktiv' : (open[k.id] ? 'ausgegeben' : 'frei');
-          var statusTxt = !k.aktiv ? 'Außer Betrieb' : (open[k.id] ? 'Ausgegeben' : 'Frei');
-          var meta = [
-            standortLabel(k.standort),
-            kofferBereichText(k) || (k.kapazitaet > 1 ? k.kapazitaet + ' Geräte' : null),
-            k.barcode
-          ].filter(Boolean).join(' · ');
-          return e('div', { key: k.id, className: 'koffer-item', 'data-testid': 'koffer-item', 'data-barcode': k.barcode },
-            e('div', { className: 'koffer-icon' }, k.typ === 'beamer' ? '📽️' : (k.typ === 'ipad_koffer' ? '📱' : '📦')),
-            e('div', { className: 'koffer-main' },
-              e('div', { className: 'name' }, kofferTitel(k)),
-              e('div', { className: 'meta' }, meta)
-            ),
-            e('div', { className: 'status-pill ' + statusCls, 'data-testid': 'koffer-status' }, statusTxt)
+        isAdmin && e(React.Fragment, null,
+          e('div', { className: 'section-title' }, 'Offene Buchungen aller Lehrkräfte (Admin)'),
+          offeneBuchungen.length === 0
+            ? e('div', { className: 'inline-note', style: { marginBottom: '8px' } }, 'Keine offenen Buchungen.')
+            : offeneBuchungen.map(function (b) {
+                return e(BuchungItem, { key: b.id, b: b, ds: ds, admin: true, showUser: true, testid: 'admin-buchung-item',
+                  onDone: function () { reload(); if (props.onChange) props.onChange(); } });
+              })
+        ),
+        e('div', { className: 'section-title', style: { marginTop: isAdmin ? '16px' : 0 } }, 'Geräte-Bestand nach Standort'),
+        gruppen.map(function (g) {
+          var bereit = g.koffer.filter(function (k) { return !k.ausser_betrieb; });
+          var geraete = bereit.reduce(function (s, k) { return s + (k.typ === 'raum' ? 0 : (Number(k.kapazitaet) || 0)); }, 0);
+          var draussen = bereit.filter(function (k) { return open[k.id]; }).length;
+          return e('section', { key: g.key, 'data-testid': 'standort-gruppe', 'data-standort': g.key },
+            e('div', { className: 'standort-head' }, g.titel,
+              e('span', null, g.key === '__raum'
+                ? (g.koffer.length + ' Räume')
+                : (bereit.length + ' von ' + g.koffer.length + ' einsatzbereit · ' + geraete + ' Geräte' + (draussen ? ' · ' + draussen + ' ausgegeben' : '')))),
+            g.koffer.map(function (k) {
+              var ms = meldungenVon(k.id);
+              var statusCls = k.ausser_betrieb ? 'inaktiv' : (open[k.id] ? 'ausgegeben' : 'frei');
+              var statusTxt = k.ausser_betrieb ? 'Außer Betrieb' : (open[k.id] ? 'Ausgegeben' : 'Frei');
+              var meta = [
+                kofferBereichText(k) || (k.kapazitaet > 1 ? k.kapazitaet + ' Geräte' : null),
+                standortLabel(k.standort) !== '—' ? standortLabel(k.standort) : null
+              ].filter(Boolean).join(' · ');
+              return e('div', { key: k.id, className: 'koffer-item', 'data-testid': 'koffer-item', 'data-barcode': k.barcode },
+                e('div', { className: 'koffer-icon' }, k.typ === 'beamer' ? '📽️' : (k.typ === 'ipad_koffer' ? '📱' : k.typ === 'laptop_koffer' ? '💻' : '🚪')),
+                e('div', { className: 'koffer-main' },
+                  e('div', { className: 'name' }, kofferTitel(k)),
+                  e('div', { className: 'meta' }, meta),
+                  k.ausser_betrieb && k.ausser_betrieb_grund && e('div', { className: 'meta', style: { color: 'var(--danger)' } }, k.ausser_betrieb_grund)
+                ),
+                e('div', { className: 'status-pill ' + statusCls, 'data-testid': 'koffer-status' }, statusTxt),
+                ms.length > 0 && e('div', { className: 'item-extra' }, ms.map(function (m) {
+                  return e('div', { key: m.id, className: 'meldung-chip', 'data-testid': 'meldung-chip' },
+                    e('span', null, '⚠ ' + meldungText(m) + (m.text ? ' — ' + m.text : '') + (m.kuerzel ? ' (' + m.kuerzel + ', ' + datumDE(String(m.created_at).slice(0, 10)) + ')' : '')),
+                    isAdmin && e('button', { className: 'act-btn', onClick: function () { erledigt(m); }, 'data-testid': 'meldung-erledigt' }, '✓ erledigt'));
+                })),
+                k.typ !== 'raum' && e('div', { className: 'item-actions' },
+                  e('button', { className: 'act-btn', 'data-testid': 'koffer-melden',
+                    onClick: function () { meldungErfassen(ds, [k]).then(function (ok) { if (ok) reload(); }); } }, '⚠ Problem melden'),
+                  isAdmin && e('button', { className: 'act-btn' + (k.ausser_betrieb ? ' primary' : ''), 'data-testid': 'koffer-ausser-betrieb',
+                    onClick: function () { toggleAusserBetrieb(k); } }, k.ausser_betrieb ? '✓ Wieder in Betrieb' : '⛔ Außer Betrieb'))
+              );
+            })
           );
         })
       );
@@ -1008,11 +1415,20 @@
     function ReservierenView(props) {
       var ds = props.ds;
       var [koffer, setKoffer] = useState([]);
+      var [alleKoffer, setAlleKoffer] = useState([]);
       var [buchungen, setBuchungen] = useState([]);
       var [kofferId, setKofferId] = useState('');
-      var [datum, setDatum] = useState(todayISO());
-      var [von, setVon] = useState(1);
-      var [bis, setBis] = useState(2);
+      // v1.6.0: keine Buchung in der Vergangenheit -- Start auf der naechsten
+      // offenen Stunde, nach Schulschluss auf dem naechsten Schultag.
+      var [datum, setDatum] = useState(function () {
+        var h = todayISO(); return ersteOffeneStunde(h, props.raster) ? h : naechsterSchultag(h);
+      });
+      var [von, setVon] = useState(function () {
+        var h = todayISO(); return ersteOffeneStunde(h, props.raster) || 1;
+      });
+      var [bis, setBis] = useState(function () {
+        var h = todayISO(); var v = ersteOffeneStunde(h, props.raster) || 1; return Math.min(v + 1, 8);
+      });
       var [zweck, setZweck] = useState('');
       var [saving, setSaving] = useState(false);
       // S1 (31.07.2026): Modus-Umschalter Pool (Anzahl, egal welcher Koffer) vs.
@@ -1023,13 +1439,30 @@
       var [poolAnzahl, setPoolAnzahl] = useState('1'); // S3: als String -- leeres Feld waehrend des Tippens erlauben (siehe res-pool-anzahl unten)
       var [kapaInfo, setKapaInfo] = useState(null);
 
+      // Vergangene Stunden: bei Datumswechsel auf die erste offene Stunde springen
+      useEffect(function () {
+        if (!stundeVorbei(datum, von)) return;
+        var v = ersteOffeneStunde(datum, props.raster);
+        if (v != null) { setVon(v); setBis(function (b) { return Math.max(b, v); }); }
+      }, [datum, props.raster]);
+      // Standort passend zum Geraetetyp (Laptops stehen nur im PC-Raum)
+      var standortOptionen = standorteFuer(alleKoffer, poolTyp);
+      useEffect(function () {
+        if (standortOptionen.indexOf(poolStandort) === -1) setPoolStandort(standortOptionen[0]);
+      }, [poolTyp, alleKoffer]);
+
       var reload = useCallback(function () {
         ds.getKoffer().then(function (ks) {
-          var active = ks.filter(function (k) { return k.aktiv; });
+          setAlleKoffer(ks);
+          var active = ks.filter(einsatzbereit).sort(kofferSort);
           setKoffer(active);
           setKofferId(function (cur) { return cur || (active[0] ? String(active[0].id) : ''); });
         });
-        ds.getMeineBuchungen().then(setBuchungen).catch(function () {});
+        ds.getMeineBuchungen().then(function (bs) {
+          var grenze = new Date(); grenze.setDate(grenze.getDate() - 7);
+          var g = grenze.getFullYear() + '-' + String(grenze.getMonth() + 1).padStart(2, '0') + '-' + String(grenze.getDate()).padStart(2, '0');
+          setBuchungen(bs.filter(function (b) { return b.status === 'reserviert' || b.status === 'ausgegeben' || b.datum >= g; }));
+        }).catch(function () {});
       }, [ds]);
       useEffect(reload, [reload, props.refreshKey]);
 
@@ -1110,8 +1543,7 @@
             e('div', { className: 'field' },
               e('label', null, 'Standort'),
               e('select', { value: poolStandort, onChange: function (ev) { setPoolStandort(ev.target.value); }, 'data-testid': 'res-pool-standort' },
-                e('option', { value: 'LZ' }, 'Lehrerzimmer (LZ)'),
-                e('option', { value: '1OG' }, 'Kartenraum (1. OG)')
+                standortOptionen.map(function (so) { return e('option', { key: so, value: so }, STANDORT_OPTION_LABEL[so] || standortLabel(so)); })
               )
             ),
             e('div', { className: 'field' },
@@ -1144,7 +1576,12 @@
             e('label', null, 'Koffer / Gerät'),
             e('select', { value: kofferId, onChange: function (ev) { setKofferId(ev.target.value); }, 'data-testid': 'res-koffer' },
               koffer.length === 0 ? e('option', { value: '' }, '— kein aktiver Koffer —') :
-              koffer.map(function (k) { return e('option', { key: k.id, value: String(k.id) }, kofferTitel(k) + (kofferBereichText(k) ? ' (' + kofferBereichText(k) + ')' : '')); })
+              STANDORT_ORDER.concat(['__rest']).map(function (so) {
+                var ks = koffer.filter(function (k) { return so === '__rest' ? STANDORT_ORDER.indexOf(k.standort) === -1 : k.standort === so; });
+                if (!ks.length) return null;
+                return e('optgroup', { key: so, label: so === '__rest' ? 'Sonstiges' : standortLabel(so) },
+                  ks.map(function (k) { return e('option', { key: k.id, value: String(k.id) }, kofferTitel(k) + (kofferBereichText(k) ? ' (' + kofferBereichText(k) + ')' : '')); }));
+              })
             )
           ),
           e('div', { className: 'field' },
@@ -1155,12 +1592,12 @@
             e('div', { className: 'field' },
               e('label', null, 'Von (Stunde)'),
               e('select', { value: von, onChange: function (ev) { setVon(Number(ev.target.value)); }, 'data-testid': 'res-von' },
-                stundenListe(props.raster).map(function (s) { return e('option', { key: s, value: s, disabled: !istBuchbar(props.raster, s) }, s + '. Stunde' + (!istBuchbar(props.raster, s) ? ' (nicht buchbar)' : '')); }))
+                stundenListe(props.raster).map(function (s) { var vorbei = stundeVorbei(datum, s); return e('option', { key: s, value: s, disabled: !istBuchbar(props.raster, s) || vorbei }, s + '. Stunde' + (!istBuchbar(props.raster, s) ? ' (nicht buchbar)' : vorbei ? ' (vorbei)' : '')); }))
             ),
             e('div', { className: 'field' },
               e('label', null, 'Bis (Stunde)'),
               e('select', { value: bis, onChange: function (ev) { setBis(Number(ev.target.value)); }, 'data-testid': 'res-bis' },
-                stundenListe(props.raster).map(function (s) { return e('option', { key: s, value: s, disabled: !istBuchbar(props.raster, s) }, s + '. Stunde' + (!istBuchbar(props.raster, s) ? ' (nicht buchbar)' : '')); }))
+                stundenListe(props.raster).map(function (s) { var vorbei = stundeVorbei(datum, s); return e('option', { key: s, value: s, disabled: !istBuchbar(props.raster, s) || vorbei }, s + '. Stunde' + (!istBuchbar(props.raster, s) ? ' (nicht buchbar)' : vorbei ? ' (vorbei)' : '')); }))
             )
           ),
           modus === 'pool' && kapaInfo && e('div', {
@@ -1176,36 +1613,8 @@
         buchungen.length === 0
           ? e('div', { className: 'empty' }, e('div', { className: 'empty-icon' }, '🗓️'), e('p', null, 'Noch keine Reservierung.'))
           : buchungen.map(function (b) {
-              var isPool = b.koffer_id == null;
-              var k = b.koffer || {};
-              var mainLabel = isPool
-                ? ((b.anzahl || 1) + '× ' + poolTypLabel(b.pool_typ) + ' · ' + poolStandortLabel(b.pool_standort))
-                : (k.bezeichnung ? kofferTitel(k) : ('Koffer #' + b.koffer_id));
-              return e('div', { key: b.id, className: 'buchung-item', 'data-testid': 'buchung-item' },
-                e('div', { className: 'koffer-icon' }, '🗓️'),
-                e('div', { className: 'koffer-main' },
-                  e('div', { className: 'name' }, mainLabel),
-                  e('div', { className: 'meta' }, b.datum + ' · ' + b.stunde_von + '.–' + b.stunde_bis + '. Std' + (b.zweck ? ' · ' + b.zweck : ''))
-                ),
-                e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : b.status === 'zurueck' ? 'frei' : b.status === 'abgelaufen' ? 'abgelaufen' : 'reserviert') }, statusLabel(b.status)),
-                // Feedback #9 (Stresstest 09.07.): Reservierung wieder stornieren können
-                b.status === 'reserviert' && e('button', {
-                  className: 'storno-btn',
-                  'data-testid': 'buchung-storno',
-                  title: 'Reservierung stornieren',
-                  'aria-label': 'Reservierung stornieren',
-                  onClick: function () {
-                    if (!window.confirm('Reservierung „' + mainLabel + '" am ' + b.datum + ' wirklich stornieren?')) return;
-                    ds.stornoBuchung(b.id)
-                      .then(function () {
-                        showToast('Reservierung storniert.', 'success');
-                        reload();
-                        if (props.onChange) props.onChange();
-                      })
-                      .catch(function (err) { showToast(errMsg(err), 'error'); });
-                  }
-                }, '✕ Stornieren')
-              );
+              return e(BuchungItem, { key: b.id, b: b, ds: ds, admin: false,
+                onDone: function () { reload(); if (props.onChange) props.onChange(); } });
             })
       );
     }
@@ -1214,7 +1623,57 @@
     // ── Standort: Schlüssel bleiben 'LZ' / '1OG' (pool_frei_pro_stunde filtert
     //    exakt darauf), nur der Klartext wird angezeigt. Korrektur 20.09.2026:
     //    LZ ist das **Lehrerzimmer** (nicht Lernzentrum), 1OG der **Kartenraum**.
-    var STANDORT_LABEL = { LZ: 'Lehrerzimmer', '1OG': 'Kartenraum' };
+    var STANDORT_LABEL = { LZ: 'Lehrerzimmer', '1OG': 'Kartenraum', PCR: 'PC-Raum' };
+    // v1.6.0: feste Reihenfolge fuer Listen; Laptops (2 Wagen a 15) stehen im PC-Raum.
+    var STANDORT_ORDER = ['LZ', '1OG', 'PCR'];
+    var STANDORT_OPTION_LABEL = { LZ: 'Lehrerzimmer (LZ)', '1OG': 'Kartenraum (1. OG)', PCR: 'PC-Raum' };
+    var STANDORT_FALLBACK = { ipad_koffer: ['LZ', '1OG'], laptop_koffer: ['PCR'] };
+    function standortRang(s) { var i = STANDORT_ORDER.indexOf(s); return i === -1 ? (s ? 50 : 99) : i; }
+    function kofferSort(a, b) {
+      var ra = standortRang(a.standort), rb = standortRang(b.standort);
+      if (ra !== rb) return ra - rb;
+      var ta = a.typ === 'ipad_koffer' ? 0 : 1, tb = b.typ === 'ipad_koffer' ? 0 : 1;
+      if (ta !== tb) return ta - tb;
+      var na = kofferNummer(a), nb = kofferNummer(b);
+      if (na != null && nb != null && na !== nb) return na - nb;
+      return String(a.barcode || a.bezeichnung).localeCompare(String(b.barcode || b.bezeichnung), 'de', { numeric: true });
+    }
+    function einsatzbereit(k) { return !!(k && k.aktiv && !k.ausser_betrieb); }
+    function standorteFuer(koffer, typ) {
+      var set = {};
+      (koffer || []).forEach(function (k) { if (einsatzbereit(k) && k.typ === typ && k.standort) set[k.standort] = true; });
+      var liste = Object.keys(set).sort(function (a, b) { return standortRang(a) - standortRang(b); });
+      return liste.length ? liste : (STANDORT_FALLBACK[typ] || ['LZ']);
+    }
+    // Stunde heute schon vorbei? (Ende der Stunde <= jetzt)
+    function stundeVorbei(datum, stunde, now) {
+      var heute = todayISO();
+      if (datum < heute) return true;
+      if (datum > heute) return false;
+      var z = (MEDIEN.STUNDEN_ZEITEN || {})[stunde];
+      if (!z) return false;
+      now = now || new Date();
+      return parseHM(z[1]) <= now.getHours() * 60 + now.getMinutes();
+    }
+    function ersteOffeneStunde(datum, raster) {
+      var l = stundenListe(raster);
+      for (var i = 0; i < l.length; i++) if (istBuchbar(raster, l[i]) && !stundeVorbei(datum, l[i])) return l[i];
+      return null;
+    }
+    function naechsterSchultag(iso) {
+      var d = new Date(iso + 'T12:00:00');
+      do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    function datumDE(iso) { var p = String(iso || '').split('-'); return p.length === 3 ? (p[2] + '.' + p[1] + '.') : iso; }
+    var MELDUNG_ART = { fehlt: 'iPad fehlt', geraet_defekt: 'Gerät kaputt', tastatur_defekt: 'Tastatur kaputt', ladekabel: 'Ladekabel/Netzteil', sonstiges: 'Sonstiges' };
+    function meldungText(m) {
+      var t = MELDUNG_ART[m.art] || m.art;
+      if (m.art === 'fehlt' && m.anzahl) t = m.anzahl + (m.anzahl === 1 ? ' Gerät fehlt' : ' Geräte fehlen');
+      else if (m.anzahl && m.anzahl > 1) t = m.anzahl + '× ' + t;
+      if (m.geraete) t += ' · Nr. ' + m.geraete;
+      return t;
+    }
     function standortLabel(s) { return STANDORT_LABEL[s] || s || '—'; }
     function poolStandortLabel(s) { return standortLabel(s); }
 
@@ -1322,7 +1781,7 @@
         ds.stationReturn(barcode, key).then(function (res) {
           pendingRef.current = null;
           var kname = res.koffer ? kofferTitel(res.koffer) : barcode;
-          setResult({ ok: true, title: 'Zurückgegeben', text: kname + ' ist wieder verfügbar.' });
+          setResult({ ok: true, title: 'Zurückgegeben', text: kname + ' ist wieder verfügbar.', meldenBarcode: (res.koffer && res.koffer.barcode) || barcode });
           showToast('Zurückgegeben: ' + kname, 'success');
           reset(false); if (props.onChange) props.onChange();
         }).catch(function (err) {
@@ -1510,7 +1969,17 @@
             e('div', { style: { fontSize: '13px', marginTop: '2px' } }, result.text),
             result.retry && e('button', {
               className: 'btn btn-ghost', style: { marginTop: '10px' }, onClick: retryPending, 'data-testid': 'station-retry'
-            }, '🔁 Erneut versuchen (gleicher Vorgang)')
+            }, '🔁 Erneut versuchen (gleicher Vorgang)'),
+            result.ok && result.meldenBarcode && e('button', {
+              className: 'btn btn-ghost', style: { marginTop: '10px' }, 'data-testid': 'station-melden',
+              onClick: function () {
+                ds.getKoffer().then(function (ks) {
+                  var k = ks.find(function (x) { return x.barcode === result.meldenBarcode; });
+                  if (!k) { showToast('Koffer nicht gefunden.', 'error'); return; }
+                  return meldungErfassen(ds, [k], { title: 'Fehlt etwas oder ist etwas kaputt?' });
+                }).then(function () { refocus(); });
+              }
+            }, '⚠ Fehlt etwas / kaputt? Melden')
           ),
           e('div', { className: 'inline-note', 'data-testid': 'station-ablauf' }, s.quelle === 'selbst'
             ? 'Ablauf: ① optional Stunde/Doppelstunde  →  ② Koffer scannen = Ausgabe. Rückgabe: Rückgabe-Code  →  Koffer. Kamera startet nur auf Knopfdruck.'
@@ -1814,37 +2283,38 @@
       var isAdmin = !!(profile && (profile.role === 'admin' || profile.role === 'owner'));
 
       return e('div', { className: 'app', 'data-mode': modeRef.current },
-        e('header', { className: 'header' },
-          e('div', { className: 'logo' }, '📱', e('span', { className: 'neu-badge' }, 'NEU')),
-          e('div', { className: 'header-titles' },
-            e('h1', null, 'iPad-Buchung'),
-            e('p', null, 'Kurpfalz-Realschule · neu')
+        e('div', { className: 'topbar' },
+          e('header', { className: 'header' },
+            e('div', { className: 'logo' }, '📱', e('span', { className: 'neu-badge' }, 'NEU')),
+            e('div', { className: 'header-titles' },
+              e('h1', null, 'iPad-Buchung'),
+              e('p', null, 'Kurpfalz-Realschule · v' + window.KRS_BUCHUNG_VERSION)
+            ),
+            profile && e('div', { className: 'user-chip' },
+              e('span', null, profile.display_name || profile.kuerzel),
+              e('div', { className: 'avatar', style: { background: profile.avatar_color || '#64748b' } }, initials)
+            )
           ),
-          profile && e('div', { className: 'user-chip' },
-            e('span', null, profile.display_name || profile.kuerzel),
-            e('div', { className: 'avatar', style: { background: profile.avatar_color || '#64748b' } }, initials)
+          modeRef.current === 'demo' && e('div', { className: 'mode-banner' }, 'Demo-Modus — Änderungen werden nicht gespeichert'),
+          !notLoggedIn && e('nav', { className: 'tabs', role: 'tablist' },
+            tabBtn('reservieren', '🗓️', 'Reservieren', tab, setTab),
+            tabBtn('scannen', '📷', 'Station', tab, setTab),
+            tabBtn('bestand', '📦', 'Bestand', tab, setTab),
+            isAdmin && tabBtn('auslastung', '📊', 'Auslastung', tab, setTab)
           )
         ),
-        modeRef.current === 'demo' && e('div', { className: 'mode-banner' }, 'Demo-Modus — Änderungen werden nicht gespeichert'),
         notLoggedIn
           ? e('div', { className: 'content' }, e('div', { className: 'card' },
               e('div', { className: 'section-title' }, 'Anmeldung nötig'),
               e('p', { className: 'inline-note warn' }, 'Bitte zuerst in KRS Connect anmelden — die Buchung nutzt dieselbe Sitzung. Danach diese Seite neu laden.')
             ))
-          : e(React.Fragment, null,
-              e('nav', { className: 'tabs', role: 'tablist' },
-                tabBtn('reservieren', '🗓️', 'Reservieren', tab, setTab),
-                tabBtn('scannen', '📷', 'Station', tab, setTab),
-                tabBtn('bestand', '📦', 'Bestand', tab, setTab),
-                isAdmin && tabBtn('auslastung', '📊', 'Auslastung', tab, setTab)
-              ),
-              e('main', { className: 'content' },
-                tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, raster: raster, onChange: bump }),
-                tab === 'scannen' && e(StationView, { ds: ds, profile: profile, onChange: bump }),
-                tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey }),
-                tab === 'auslastung' && isAdmin && e(AuslastungView, { ds: ds })
-              )
+          : e('main', { className: 'content' },
+              tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, raster: raster, onChange: bump }),
+              tab === 'scannen' && e(StationView, { ds: ds, profile: profile, onChange: bump }),
+              tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey, isAdmin: isAdmin, onChange: bump }),
+              tab === 'auslastung' && isAdmin && e(AuslastungView, { ds: ds })
             ),
+        e(DialogHost, null),
         e(Toasts, null)
       );
     }
@@ -1857,6 +2327,8 @@
       }, e('span', { className: 'tab-icon' }, icon), e('span', null, label));
     }
 
+    try { if (window.self !== window.top) document.documentElement.classList.add('embedded'); }
+    catch (eEmb) { document.documentElement.classList.add('embedded'); }
     ReactDOM.createRoot(document.getElementById('root')).render(e(App, null));
   })();
   </script>

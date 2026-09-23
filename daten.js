@@ -18,6 +18,7 @@ window.KRS_MEDIEN = {
   //   filtert exakt darauf), der Klartext ist:
   //     LZ  = Lehrerzimmer      (NICHT Lernzentrum -- Korrektur 20.09.2026)
   //     1OG = Kartenraum (1. OG)
+  //     PCR = PC-Raum           (Laptopwagen, seit 23.09.2026)
   // Stand 19.09.2026, identisch mit koffer_physisch in Supabase. Fuer die
   // Verfuegbarkeit zaehlt weiterhin ein Koffer = eine buchbare Einheit;
   // kapazitaet wird nur fuer Auswertungen ("wie viele Geraete") gebraucht.
@@ -36,11 +37,11 @@ window.KRS_MEDIEN = {
     { barcode: 'KOFFER-10', bezeichnung: 'iPad lila',          typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
     { barcode: 'KOFFER-11', bezeichnung: 'iPad orange',        typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: '' },
     { barcode: 'KOFFER-12', bezeichnung: 'iPad grün/rot (VKL)', typ: 'ipad_koffer', kapazitaet: 10, standort: '1OG', notiz: 'VKL' },
-    // Laptop-Koffer (Stückzahl aus Vorlage)
-    { barcode: 'LAPTOP-01', bezeichnung: 'Laptop-Koffer 1',    typ: 'laptop_koffer', kapazitaet: 15, standort: 'LZ',  notiz: '15 PCs' },
-    { barcode: 'LAPTOP-02', bezeichnung: 'Laptop-Koffer 2',    typ: 'laptop_koffer', kapazitaet: 15, standort: 'LZ',  notiz: '15 Stück' },
-    { barcode: 'LAPTOP-03', bezeichnung: 'Laptop-Koffer 1',    typ: 'laptop_koffer', kapazitaet: 15, standort: '1OG', notiz: '15 PCs' },
-    { barcode: 'LAPTOP-04', bezeichnung: 'Laptop-Koffer 2',    typ: 'laptop_koffer', kapazitaet: 15, standort: '1OG', notiz: '15 Stück' }
+    // Laptops (23.09.2026, Norbert): es gibt nur 2 Laptopwagen a 15 Geraete,
+    // beide im PC-Raum (Standort-Schluessel 'PCR'). LAPTOP-03/04 sind in der DB
+    // archiviert (aktiv = false).
+    { barcode: 'LAPTOP-01', bezeichnung: 'Laptopwagen 1',      typ: 'laptop_koffer', kapazitaet: 15, standort: 'PCR', notiz: '15 Laptops' },
+    { barcode: 'LAPTOP-02', bezeichnung: 'Laptopwagen 2',      typ: 'laptop_koffer', kapazitaet: 15, standort: 'PCR', notiz: '15 Laptops' }
   ],
 
   // ── Lehrkräfte (für Wand-Etiketten mit Lehrer-Code L-<Kürzel>) ──
