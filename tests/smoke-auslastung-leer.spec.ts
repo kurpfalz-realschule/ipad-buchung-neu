@@ -11,8 +11,9 @@ import { test, expect } from '@playwright/test';
  */
 test('S1: null-Kennzahlen erscheinen als "noch keine Daten", nie als 0 %', async ({ page }) => {
   await page.goto('/index.html?forceMode=demo&forceUser=Ko');
-  await page.waitForSelector('[data-testid="tab-auslastung"]');
-  await page.click('[data-testid="tab-auslastung"]');
+  await page.waitForSelector('[data-testid="tab-verwaltung"]');
+  await page.click('[data-testid="tab-verwaltung"]');
+  await page.click('[data-testid="verw-auslastung"]');
   await expect(page.locator('[data-testid="auslastung-view"]')).toBeVisible();
   await page.waitForTimeout(400);
 

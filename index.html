@@ -176,6 +176,10 @@
     /* Im Hub eingebettet: der Hub zeigt Titel und Avatar schon -- eigener Kopf
        entfaellt (sonst doppelte Kopfzeile + Safe-Area-Luecke, Tabs verdeckt). */
     .topbar { position: sticky; top: 0; z-index: 20; }
+    .tab-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px;
+      background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center; vertical-align: 1px; }
+    .zeitraum-switch.sub4 .zeitraum-btn { min-width: calc(50% - 3px); }
+    .nutzung-tab th, .nutzung-tab td { padding: 6px 3px !important; font-size: 12px !important; white-space: nowrap; }
     .topbar .header, .topbar .tabs { position: static; }
     html.embedded .topbar .header { display: none; }
 
@@ -281,7 +285,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.6.0'; // 23.09.2026: Rueckgabe/Storno ohne window.confirm, Meldungen, Standorte, PC-Raum
+    window.KRS_BUCHUNG_VERSION = '1.7.0'; // 23.09.2026: Verwaltung nur iPad-Admin (Meldungen, Nutzung, Auslastung), Problem-Hinweise bei Buchungen
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -472,16 +476,34 @@
           .filter(function (b) { return b.status !== 'storniert'; })
           .map(function (b) {
             var k = self._koffer.find(function (x) { return x.id === b.koffer_id; });
-            return Object.assign({}, b, { koffer: k });
+            return Object.assign({}, b, { koffer: k, koffer_ids: demoOffeneKoffer(self, b.id) });
           })
           .sort(function (a, b) { return (a.datum + a.stunde_von) < (b.datum + b.stunde_von) ? 1 : -1; }));
       }
       var uid = this.user && this.user.id;
       if (uid == null) return Promise.resolve([]); // ohne Identität nichts laden (kein Querbeet-Leak)
-      return this.sb.from('buchungen').select('*, koffer:koffer_physisch(*)').neq('status', 'storniert')
+      var sb = this.sb;
+      return sb.from('buchungen').select('*, koffer:koffer_physisch(*)').neq('status', 'storniert')
         .eq('user_id', uid)
         .order('datum', { ascending: false }).order('stunde_von')
-        .then(function (r) { if (r.error) throw r.error; return r.data || []; });
+        .then(function (r) {
+          if (r.error) throw r.error;
+          var rows = r.data || [];
+          var ids = rows.filter(function (b) { return b.status === 'ausgegeben' && b.koffer_id == null; }).map(function (b) { return b.id; });
+          if (!ids.length) return rows;
+          // v1.7.0: welche Koffer einer Pool-Buchung sind gerade draussen? (eigene ausgaben, RLS)
+          return sb.from('ausgaben').select('buchung_id, koffer_id, aktion, ts').in('buchung_id', ids).order('ts', { ascending: true })
+            .then(function (ra) {
+              var last = {};
+              ((ra && ra.data) || []).forEach(function (a) { last[a.buchung_id + ':' + a.koffer_id] = a; });
+              Object.keys(last).forEach(function (key) {
+                var a = last[key]; if (a.aktion !== 'checkout') return;
+                var b = rows.find(function (x) { return x.id === a.buchung_id; });
+                if (b) (b.koffer_ids = b.koffer_ids || []).push(a.koffer_id);
+              });
+              return rows;
+            }, function () { return rows; });
+        });
     };
 
     // ── Kapazitäts-/Konfliktprüfung ──
@@ -645,7 +667,7 @@
     DataService.prototype.loescheBuchung = function (id) {
       var self = this;
       if (this.isDemo) {
-        if (!this.user || (this.user.role !== 'admin' && this.user.role !== 'owner')) return Promise.reject(makeErr('not_authorized'));
+        if (!this.ipadAdmin) return Promise.reject(makeErr('not_authorized'));
         demoOffeneKoffer(this, id).forEach(function (kid) {
           self._ausgaben.push({ id: ++self._seq, koffer_id: kid, buchung_id: id, user_id: self.user.id,
             aktion: 'return', ts: new Date().toISOString(), idempotency_key: 'admin-loeschen-' + uuid() });
@@ -666,24 +688,18 @@
           .map(function (b) {
             var u = Object.keys(LEHRER_BY_CODE).map(function (c) { return LEHRER_BY_CODE[c]; }).find(function (x) { return x.id === b.user_id; });
             return Object.assign({}, b, { koffer: self._koffer.find(function (k) { return k.id === b.koffer_id; }),
+              koffer_ids: demoOffeneKoffer(self, b.id),
               user: u || (self.user && self.user.id === b.user_id ? self.user : null) });
           })
           .sort(function (a, b) { return (a.datum + String(a.stunde_von).padStart(2, '0')) < (b.datum + String(b.stunde_von).padStart(2, '0')) ? -1 : 1; }));
       }
-      var sel = function (cols) {
-        return self.sb.from('buchungen').select(cols).in('status', ['reserviert', 'ausgegeben'])
-          .order('datum', { ascending: true }).order('stunde_von', { ascending: true });
-      };
-      return sel('*, koffer:koffer_physisch(*), user:users(kuerzel, display_name)').then(function (r) {
-        if (!r.error) return r.data || [];
-        return sel('*, koffer:koffer_physisch(*)').then(function (r2) { if (r2.error) throw r2.error; return r2.data || []; });
-      });
+      return this.sb.rpc('rpc_buchungen_offen_admin').then(function (r) { if (r.error) throw r.error; return r.data || []; });
     };
 
     // ── Koffer-Meldungen (v1.6.0) ──
     DataService.prototype.getMeldungen = function () {
       if (this.isDemo) {
-        var admin = this.user && (this.user.role === 'admin' || this.user.role === 'owner');
+        var admin = !!this.ipadAdmin;
         var uid = this.user && this.user.id;
         return Promise.resolve((this._meldungen || []).filter(function (m) { return m.status === 'offen'; }).map(function (m) {
           return Object.assign({}, m, { text: (admin || m.user_id === uid) ? m.text : null, kuerzel: admin ? m.kuerzel : null });
@@ -705,19 +721,82 @@
         p_geraete: m.geraete || null, p_text: m.text || null, p_buchung_id: m.buchung_id || null
       }).then(function (r) { if (r.error) throw r.error; return r.data; });
     };
-    DataService.prototype.meldungErledigt = function (id) {
+    DataService.prototype.meldungErledigt = function (id, notiz) {
       if (this.isDemo) {
         var m = (this._meldungen || []).find(function (x) { return x.id === id; });
-        if (m) m.status = 'erledigt';
+        if (m) { m.status = 'erledigt'; m.erledigt_at = new Date().toISOString(); m.erledigt_notiz = notiz || null; m.erledigt_kuerzel = this.user && this.user.kuerzel; }
         return Promise.resolve({ id: id });
       }
-      return this.sb.rpc('rpc_koffer_meldung_erledigen', { p_id: id }).then(function (r) { if (r.error) throw r.error; return r.data; });
+      return this.sb.rpc('rpc_koffer_meldung_erledigen', { p_id: id, p_notiz: notiz || null }).then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+    DataService.prototype.meldungWiederOeffnen = function (id) {
+      if (this.isDemo) {
+        var m = (this._meldungen || []).find(function (x) { return x.id === id; });
+        if (m) { m.status = 'offen'; m.erledigt_at = null; m.erledigt_notiz = null; m.erledigt_kuerzel = null; }
+        return Promise.resolve({ id: id });
+      }
+      return this.sb.rpc('rpc_koffer_meldung_wieder_oeffnen', { p_id: id }).then(function (r) { if (r.error) throw r.error; return r.data; });
+    };
+    // Verwaltung: alle Meldungen (optional nach Status/Koffer), mit Koffer, Kuerzel, Buchung
+    DataService.prototype.getMeldungenAdmin = function (status, kofferId) {
+      var self = this;
+      if (this.isDemo) {
+        if (!this.ipadAdmin) return Promise.reject(makeErr('not_authorized'));
+        return Promise.resolve((this._meldungen || [])
+          .filter(function (m) { return (!status || m.status === status) && (!kofferId || m.koffer_id === kofferId); })
+          .map(function (m) { return Object.assign({}, m, { koffer: self._koffer.find(function (k) { return k.id === m.koffer_id; }) }); })
+          .sort(function (a, b) { return (a.status === 'offen') !== (b.status === 'offen') ? (a.status === 'offen' ? -1 : 1) : (a.created_at < b.created_at ? 1 : -1); }));
+      }
+      return this.sb.rpc('rpc_koffer_meldungen_admin', { p_status: status || null, p_koffer_id: kofferId || null })
+        .then(function (r) { if (r.error) throw r.error; return r.data || []; });
+    };
+    // Verwaltung: Nutzung pro Person (nur iPad-Admin, serverseitig geprueft)
+    DataService.prototype.getNutzung = function (von, bis) {
+      var self = this;
+      if (this.isDemo) {
+        if (!this.ipadAdmin) return Promise.reject(makeErr('not_authorized'));
+        var proUser = {};
+        this._buchungen.filter(function (b) { return b.datum >= von && b.datum <= bis; }).forEach(function (b) {
+          var u = Object.keys(LEHRER_BY_CODE).map(function (c) { return LEHRER_BY_CODE[c]; }).find(function (x) { return x.id === b.user_id; })
+            || (self.user && self.user.id === b.user_id ? self.user : { kuerzel: '?', display_name: '?' });
+          var r = proUser[b.user_id] = proUser[b.user_id] || { kuerzel: u.kuerzel, display_name: u.display_name, buchungen: 0, koffer: 0, kofferstunden: 0, ipad: 0, laptop: 0, storniert: 0, nicht_abgeholt: 0, meldungen: 0, letzte: null };
+          if (b.status === 'storniert') { r.storniert++; return; }
+          var typ = b.pool_typ || ((self._koffer.find(function (k) { return k.id === b.koffer_id; }) || {}).typ);
+          r.buchungen++; r.koffer += (b.anzahl || 1); r.kofferstunden += (b.anzahl || 1) * (b.stunde_bis - b.stunde_von + 1);
+          if (typ === 'ipad_koffer') r.ipad++; if (typ === 'laptop_koffer') r.laptop++;
+          if (b.status === 'abgelaufen') r.nicht_abgeholt++;
+          if (!r.letzte || b.datum > r.letzte) r.letzte = b.datum;
+        });
+        return Promise.resolve(Object.keys(proUser).map(function (k) { return proUser[k]; })
+          .sort(function (a, b) { return b.kofferstunden - a.kofferstunden; }));
+      }
+      return this.sb.rpc('rpc_nutzung_pro_person', { p_von: von, p_bis: bis }).then(function (r) { if (r.error) throw r.error; return r.data || []; });
+    };
+    DataService.prototype.pruefeIpadAdmin = function () {
+      if (this.isDemo) return Promise.resolve(!!this.ipadAdmin);
+      return this.sb.rpc('is_ipad_admin').then(function (r) { return !r.error && r.data === true; }, function () { return false; });
     };
     DataService.prototype.setAusserBetrieb = function (kofferId, flag, grund) {
       if (this.isDemo) {
         var k = this._koffer.find(function (x) { return x.id === kofferId; });
         if (k) { k.ausser_betrieb = !!flag; k.ausser_betrieb_grund = flag ? (grund || null) : null; }
-        return Promise.resolve({ koffer_id: kofferId });
+        var self = this, konflikte = [];
+        if (flag && k && k.standort) {
+          var tage = {};
+          this._buchungen.forEach(function (b) {
+            if ((b.status === 'reserviert' || b.status === 'ausgegeben') && b.datum >= todayISO() && b.pool_typ === k.typ && b.pool_standort === k.standort) tage[b.datum] = true;
+          });
+          var bestand = this._koffer.filter(function (x) { return einsatzbereit(x) && x.typ === k.typ && x.standort === k.standort; }).length;
+          Object.keys(tage).sort().forEach(function (d) {
+            for (var h = 1; h <= 9; h++) {
+              var belegt = self._buchungen.filter(function (b) { return b.datum === d && (b.status === 'reserviert' || b.status === 'ausgegeben') &&
+                b.pool_typ === k.typ && b.pool_standort === k.standort && b.stunde_von <= h && b.stunde_bis >= h; })
+                .reduce(function (s2, b) { return s2 + (b.anzahl || 1); }, 0);
+              if (belegt > bestand) konflikte.push({ datum: d, stunde: h, belegt: belegt, bestand: bestand });
+            }
+          });
+        }
+        return Promise.resolve({ koffer_id: kofferId, konflikte: konflikte });
       }
       return this.sb.rpc('rpc_koffer_ausser_betrieb', { p_koffer_id: kofferId, p_ausser_betrieb: !!flag, p_grund: grund || null })
         .then(function (r) { if (r.error) throw r.error; return r.data; });
@@ -1090,7 +1169,8 @@
         buchung_nicht_offen: 'Diese Buchung kann nicht mehr storniert werden.',
         buchung_hat_ausgabe: 'Es ist schon ein Koffer abgeholt — bitte „Zurückgeben" statt Stornieren.',
         buchung_not_found: 'Diese Buchung gibt es nicht mehr.',
-        meldung_not_found: 'Diese Meldung ist schon erledigt.'
+        meldung_not_found: 'Diese Meldung ist schon erledigt.',
+        invalid_zeitraum: 'Bitte einen gültigen Zeitraum wählen.'
       };
       if (code === 'pool_kapazitaet_belegt') return detail || 'Nicht mehr genug Geräte frei.';
       return map[code] || ('Fehler: ' + (err && err.message ? err.message : 'unbekannt'));
@@ -1150,6 +1230,8 @@
       var close = function (v) { cur.resolve(v); setCur(null); };
       var sp = cur.spec;
       var body = sp.kind === 'meldung' ? e(MeldungForm, { spec: sp, close: close })
+        : sp.kind === 'info' ? e('div', null, e('h3', null, sp.title), sp.content,
+            e('div', { className: 'btn-row' }, e('button', { className: 'btn btn-ghost', onClick: function () { close(null); }, 'data-testid': 'dlg-cancel' }, 'Schließen')))
         : sp.kind === 'text' ? e(TextForm, { spec: sp, close: close })
         : e('div', null,
             e('h3', null, sp.title),
@@ -1293,6 +1375,7 @@
             ueberfaellig && e('span', { className: 'ueberfaellig' }, ' · noch nicht zurück'))
         ),
         e('div', { className: 'status-pill ' + (b.status === 'ausgegeben' ? 'ausgegeben' : b.status === 'zurueck' ? 'frei' : b.status === 'abgelaufen' ? 'abgelaufen' : 'reserviert') }, statusLabel(b.status)),
+        (b.status === 'reserviert' || b.status === 'ausgegeben') && e(Hinweise, { meldungen: relevanteMeldungen(props.meldungen, props.koffer, b), koffer: props.koffer, testid: 'buchung-hinweise' }),
         (b.status === 'reserviert' || b.status === 'ausgegeben' || props.admin) && e('div', { className: 'item-actions' },
           b.status === 'reserviert' && e('button', { className: 'act-btn danger storno-btn', disabled: busy, onClick: storno,
             'data-testid': 'buchung-storno', 'aria-label': 'Reservierung stornieren' }, '✕ Stornieren'),
@@ -1311,16 +1394,14 @@
       var [koffer, setKoffer] = useState([]);
       var [open, setOpen] = useState({});
       var [meldungen, setMeldungen] = useState([]);
-      var [offeneBuchungen, setOffeneBuchungen] = useState([]);
       var [loading, setLoading] = useState(true);
 
       var reload = useCallback(function () {
         ds.autoReturnDue().then(function () {
           return Promise.all([ds.getKoffer(), ds.getOffeneKofferIds(),
-            ds.getMeldungen().catch(function () { return []; }),
-            isAdmin ? ds.getOffeneBuchungenAlle().catch(function () { return []; }) : Promise.resolve([])]);
+            ds.getMeldungen().catch(function () { return []; })]);
         }).then(function (res) {
-          setKoffer(res[0]); setOpen(res[1]); setMeldungen(res[2] || []); setOffeneBuchungen(res[3] || []); setLoading(false);
+          setKoffer(res[0]); setOpen(res[1]); setMeldungen(res[2] || []); setLoading(false);
         }).catch(function (err) { showToast(errMsg(err), 'error'); setLoading(false); });
       }, [ds, isAdmin]);
       useEffect(reload, [reload, props.refreshKey]);
@@ -1348,28 +1429,34 @@
               .then(function (v) { return v === null ? null : { grund: v }; });
         p.then(function (r) {
           if (!r) return;
-          return ds.setAusserBetrieb(k.id, !k.ausser_betrieb, r.grund).then(function () {
+          return ds.setAusserBetrieb(k.id, !k.ausser_betrieb, r.grund).then(function (res) {
             showToast(k.ausser_betrieb ? 'Wieder in Betrieb.' : 'Außer Betrieb gesetzt.', 'success'); reload();
             if (props.onChange) props.onChange();
+            // Review-Fix: bestehende Reservierungen passen evtl. nicht mehr in den kleineren Pool
+            var konf = (res && res.konflikte) || [];
+            if (konf.length) {
+              openDialog({ kind: 'info', title: '⚠ Jetzt überbucht',
+                content: e('div', { 'data-testid': 'konflikt-liste' },
+                  e('p', null, 'An diesen Stunden sind mehr Koffer reserviert, als am Standort noch einsatzbereit sind. Bitte die betroffenen Kolleg:innen informieren (Verwaltung → Ausgeliehen).'),
+                  konf.map(function (c, i) { return e('div', { key: i, className: 'meldung-chip' },
+                    datumDE(c.datum) + ', ' + c.stunde + '. Std: ' + c.belegt + ' gebucht, ' + c.bestand + ' einsatzbereit'); })) });
+            }
           });
         }).catch(function (err) { showToast(errMsg(err), 'error'); });
       };
       var erledigt = function (m) {
-        ds.meldungErledigt(m.id).then(function () { showToast('Meldung erledigt.', 'success'); reload(); })
-          .catch(function (err) { showToast(errMsg(err), 'error'); });
+        meldungErledigenDialog(ds, m).then(function (ok) { if (ok) reload(); });
+      };
+      var historie = function (k) {
+        ds.getMeldungenAdmin(null, k.id).then(function (ms) {
+          return openDialog({ kind: 'info', title: 'Historie · ' + kofferTitel(k),
+            content: ms.length ? e('div', { 'data-testid': 'historie-liste' }, ms.map(function (m) { return e(MeldungZeile, { key: m.id, m: m, ohneKoffer: true }); }))
+                               : e('p', null, 'Zu diesem Koffer gibt es noch keine Meldungen.') });
+        }).catch(function (err) { showToast(errMsg(err), 'error'); });
       };
 
       return e('div', { 'data-testid': 'bestand-view' },
-        isAdmin && e(React.Fragment, null,
-          e('div', { className: 'section-title' }, 'Offene Buchungen aller Lehrkräfte (Admin)'),
-          offeneBuchungen.length === 0
-            ? e('div', { className: 'inline-note', style: { marginBottom: '8px' } }, 'Keine offenen Buchungen.')
-            : offeneBuchungen.map(function (b) {
-                return e(BuchungItem, { key: b.id, b: b, ds: ds, admin: true, showUser: true, testid: 'admin-buchung-item',
-                  onDone: function () { reload(); if (props.onChange) props.onChange(); } });
-              })
-        ),
-        e('div', { className: 'section-title', style: { marginTop: isAdmin ? '16px' : 0 } }, 'Geräte-Bestand nach Standort'),
+        e('div', { className: 'section-title' }, 'Geräte-Bestand nach Standort'),
         gruppen.map(function (g) {
           var bereit = g.koffer.filter(function (k) { return !k.ausser_betrieb; });
           var geraete = bereit.reduce(function (s, k) { return s + (k.typ === 'raum' ? 0 : (Number(k.kapazitaet) || 0)); }, 0);
@@ -1403,6 +1490,7 @@
                 k.typ !== 'raum' && e('div', { className: 'item-actions' },
                   e('button', { className: 'act-btn', 'data-testid': 'koffer-melden',
                     onClick: function () { meldungErfassen(ds, [k]).then(function (ok) { if (ok) reload(); }); } }, '⚠ Problem melden'),
+                  isAdmin && e('button', { className: 'act-btn', 'data-testid': 'koffer-historie', onClick: function () { historie(k); } }, '🕘 Historie'),
                   isAdmin && e('button', { className: 'act-btn' + (k.ausser_betrieb ? ' primary' : ''), 'data-testid': 'koffer-ausser-betrieb',
                     onClick: function () { toggleAusserBetrieb(k); } }, k.ausser_betrieb ? '✓ Wieder in Betrieb' : '⛔ Außer Betrieb'))
               );
@@ -1412,10 +1500,142 @@
       );
     }
 
+    // ════════════════════════════════════════════════════════════════
+    // Verwaltung (v1.7.0) — nur iPad-Admin (Tabelle ipad_admins, Server prueft)
+    // ════════════════════════════════════════════════════════════════
+    function meldungErledigenDialog(ds, m) {
+      return openDialog({ kind: 'text', title: 'Meldung erledigt', text: meldungText(m) + ' — was wurde gemacht? (optional)',
+          placeholder: 'z. B. iPad 14 wieder da / Tastatur getauscht', okLabel: '✓ Erledigt' })
+        .then(function (notiz) {
+          if (notiz === null) return false;
+          return ds.meldungErledigt(m.id, notiz).then(function () { showToast('Meldung erledigt.', 'success'); return true; });
+        })
+        .catch(function (err) { showToast(errMsg(err), 'error'); return false; });
+    }
+    function MeldungZeile(props) {
+      var m = props.m;
+      var k = m.koffer || {};
+      var erledigt = m.status === 'erledigt';
+      return e('div', { className: 'koffer-item', 'data-testid': 'verw-meldung', 'data-status': m.status, style: erledigt ? { opacity: .75 } : null },
+        e('div', { className: 'koffer-icon' }, erledigt ? '✅' : '⚠️'),
+        e('div', { className: 'koffer-main' },
+          !props.ohneKoffer && e('div', { className: 'name' }, (k.bezeichnung ? kofferTitel(k) : 'Koffer #' + m.koffer_id) + (k.standort ? ' · ' + standortLabel(k.standort) : '')),
+          e('div', { className: props.ohneKoffer ? 'name' : 'meta', style: props.ohneKoffer ? { fontSize: '13px' } : { color: 'var(--text)' } }, meldungText(m) + (m.text ? ' — ' + m.text : '')),
+          e('div', { className: 'meta' }, 'gemeldet ' + datumDE(String(m.created_at).slice(0, 10)) + (m.kuerzel ? ' von ' + m.kuerzel : '') +
+            (m.buchung_datum ? ' · Buchung ' + datumDE(m.buchung_datum) + ', ' + m.buchung_von + '.–' + m.buchung_bis + '. Std' : '')),
+          erledigt && e('div', { className: 'meta', style: { color: 'var(--success)' } }, '✓ erledigt ' + datumDE(String(m.erledigt_at || '').slice(0, 10)) +
+            (m.erledigt_kuerzel ? ' (' + m.erledigt_kuerzel + ')' : '') + (m.erledigt_notiz ? ': ' + m.erledigt_notiz : ''))
+        ),
+        props.onErledigt && !erledigt && e('div', { className: 'item-actions' },
+          e('button', { className: 'act-btn primary', onClick: function () { props.onErledigt(m); }, 'data-testid': 'verw-meldung-erledigt' }, '✓ Erledigt')),
+        props.onWieder && erledigt && e('div', { className: 'item-actions' },
+          e('button', { className: 'act-btn', onClick: function () { props.onWieder(m); }, 'data-testid': 'verw-meldung-wieder' }, '↺ Wieder öffnen'))
+      );
+    }
+    function MeldungenAdminView(props) {
+      var ds = props.ds;
+      var [filter, setFilter] = useState('offen');
+      var [liste, setListe] = useState(null);
+      var reload = useCallback(function () {
+        setListe(null);
+        ds.getMeldungenAdmin(filter === 'alle' ? null : filter, null).then(setListe)
+          .catch(function (err) { showToast(errMsg(err), 'error'); setListe([]); });
+      }, [ds, filter]);
+      useEffect(reload, [reload, props.refreshKey]);
+      return e('div', { 'data-testid': 'verw-meldungen-view' },
+        e('div', { className: 'zeitraum-switch' }, [['offen', 'Offen'], ['erledigt', 'Erledigt'], ['alle', 'Alle']].map(function (f) {
+          return e('button', { key: f[0], type: 'button', className: 'zeitraum-btn' + (filter === f[0] ? ' active' : ''),
+            'data-testid': 'verw-filter-' + f[0], onClick: function () { setFilter(f[0]); } }, f[1]);
+        })),
+        liste === null ? e('div', { className: 'empty' }, e('p', null, 'Lädt …'))
+          : liste.length === 0 ? e('div', { className: 'empty' }, e('div', { className: 'empty-icon' }, '✅'), e('p', null, filter === 'offen' ? 'Keine offenen Meldungen.' : 'Keine Meldungen.'))
+          : liste.map(function (m) {
+              return e(MeldungZeile, { key: m.id, m: m,
+                onErledigt: function (x) { meldungErledigenDialog(ds, x).then(function (ok) { if (ok) { reload(); if (props.onChange) props.onChange(); } }); },
+                onWieder: function (x) { ds.meldungWiederOeffnen(x.id).then(function () { showToast('Wieder offen.', 'success'); reload(); if (props.onChange) props.onChange(); })
+                  .catch(function (err) { showToast(errMsg(err), 'error'); }); } });
+            })
+      );
+    }
+    function OffeneBuchungenAdminView(props) {
+      var ds = props.ds;
+      var [liste, setListe] = useState(null);
+      var [koffer, setKoffer] = useState([]);
+      var [meldungen, setMeldungen] = useState([]);
+      var reload = useCallback(function () {
+        Promise.all([ds.getOffeneBuchungenAlle(), ds.getKoffer(), ds.getMeldungen().catch(function () { return []; })])
+          .then(function (r) { setListe(r[0]); setKoffer(r[1]); setMeldungen(r[2]); })
+          .catch(function (err) { showToast(errMsg(err), 'error'); setListe([]); });
+      }, [ds]);
+      useEffect(reload, [reload, props.refreshKey]);
+      if (liste === null) return e('div', { className: 'empty' }, e('p', null, 'Lädt …'));
+      var draussen = liste.filter(function (b) { return b.status === 'ausgegeben'; });
+      var reserviert = liste.filter(function (b) { return b.status === 'reserviert'; });
+      var item = function (b) {
+        return e(BuchungItem, { key: b.id, b: b, ds: ds, admin: true, showUser: true, testid: 'admin-buchung-item',
+          meldungen: meldungen, koffer: koffer, onDone: function () { reload(); if (props.onChange) props.onChange(); } });
+      };
+      return e('div', { 'data-testid': 'verw-buchungen-view' },
+        e('div', { className: 'section-title' }, 'Gerade ausgegeben (' + draussen.length + ')'),
+        draussen.length ? draussen.map(item) : e('div', { className: 'inline-note', style: { marginBottom: '8px' } }, 'Nichts ausgegeben.'),
+        e('div', { className: 'section-title', style: { marginTop: '16px' } }, 'Reserviert (' + reserviert.length + ')'),
+        reserviert.length ? reserviert.map(item) : e('div', { className: 'inline-note' }, 'Keine Reservierungen.')
+      );
+    }
+    function NutzungView(props) {
+      var ds = props.ds;
+      var [preset, setPreset] = useState('schuljahr');
+      var [liste, setListe] = useState(null);
+      var [err, setErr] = useState(null);
+      var heute = new Date();
+      var range = preset === 'letzte4' ? presetRange('letzte4')
+        : (function () { var sj = heute.getMonth() >= 7 ? heute.getFullYear() : heute.getFullYear() - 1;
+            return { von: ymd(new Date(sj, 7, 1)), bis: ymd(new Date(sj + 1, 6, 31)) }; })(); // Schuljahr 01.08.–31.07., inkl. kommender Reservierungen
+      useEffect(function () {
+        setListe(null); setErr(null);
+        ds.getNutzung(range.von, range.bis).then(setListe).catch(function (x) { setErr(errMsg(x)); setListe([]); });
+      }, [ds, range.von, range.bis, props.refreshKey]);
+      var th = function (t, right) { return e('th', { style: { textAlign: right ? 'right' : 'left', padding: '6px 4px', fontSize: '11px', color: 'var(--text-muted)' } }, t); };
+      var td = function (t, right, bold) { return e('td', { style: { textAlign: right ? 'right' : 'left', padding: '6px 4px', fontSize: '13px', fontWeight: bold ? 700 : 400, borderTop: '1px solid var(--border)' } }, t); };
+      return e('div', { 'data-testid': 'verw-nutzung-view' },
+        e('div', { className: 'inline-note', style: { marginBottom: '10px' } }, '🔒 Nur für dich sichtbar — das Kollegium sieht diese Auswertung nicht.'),
+        e('div', { className: 'zeitraum-switch' },
+          e('button', { type: 'button', className: 'zeitraum-btn' + (preset === 'schuljahr' ? ' active' : ''), 'data-testid': 'nutzung-schuljahr', onClick: function () { setPreset('schuljahr'); } }, 'Schuljahr'),
+          e('button', { type: 'button', className: 'zeitraum-btn' + (preset === 'letzte4' ? ' active' : ''), 'data-testid': 'nutzung-4w', onClick: function () { setPreset('letzte4'); } }, 'Letzte 4 Wochen')),
+        err && e('div', { className: 'card' }, e('p', { className: 'inline-note warn' }, err)),
+        liste === null ? e('div', { className: 'empty' }, e('p', null, 'Lädt …'))
+          : liste.length === 0 ? e('div', { className: 'empty' }, e('p', null, 'Keine Buchungen in diesem Zeitraum.'))
+          : e('div', { className: 'card', style: { padding: '8px', overflowX: 'auto' } },
+              e('table', { className: 'nutzung-tab', style: { width: '100%', borderCollapse: 'collapse' }, 'data-testid': 'nutzung-tabelle' },
+                e('thead', null, e('tr', null, th('Wer'), th('Buch.', 1), th('Std.', 1), th('iPad/Lap.', 1), th('n. abg.', 1), th('storn.', 1), th('Meld.', 1))),
+                e('tbody', null, liste.map(function (r, i) {
+                  return e('tr', { key: i, 'data-testid': 'nutzung-zeile' },
+                    td(e('span', { title: r.display_name || '' }, r.kuerzel || '?'), false, true), td(r.buchungen, 1), td(r.kofferstunden, 1, true),
+                    td(r.ipad + ' / ' + r.laptop, 1), td(r.nicht_abgeholt || '–', 1), td(r.storniert || '–', 1), td(r.meldungen || '–', 1));
+                })))),
+        liste && liste.length > 0 && e('div', { className: 'inline-note' }, 'Buch. = Buchungen · Std. = Koffer × gebuchte Stunden (ohne stornierte) · n. abg. = reserviert, aber nie abgeholt · storn. = storniert · Meld. = abgegebene Problem-Meldungen.')
+      );
+    }
+    function VerwaltungView(props) {
+      var [sub, setSub] = useState('meldungen');
+      var subs = [['meldungen', '⚠ Meldungen'], ['buchungen', '📤 Ausgeliehen'], ['nutzung', '👥 Nutzung'], ['auslastung', '📊 Auslastung']];
+      return e('div', { 'data-testid': 'verwaltung-view' },
+        e('div', { className: 'zeitraum-switch sub4', role: 'tablist' }, subs.map(function (x) {
+          return e('button', { key: x[0], type: 'button', role: 'tab', 'aria-selected': sub === x[0], className: 'zeitraum-btn' + (sub === x[0] ? ' active' : ''),
+            'data-testid': 'verw-' + x[0], onClick: function () { setSub(x[0]); } }, x[1]);
+        })),
+        sub === 'meldungen' && e(MeldungenAdminView, props),
+        sub === 'buchungen' && e(OffeneBuchungenAdminView, props),
+        sub === 'nutzung' && e(NutzungView, props),
+        sub === 'auslastung' && e(AuslastungView, { ds: props.ds })
+      );
+    }
+
     function ReservierenView(props) {
       var ds = props.ds;
       var [koffer, setKoffer] = useState([]);
       var [alleKoffer, setAlleKoffer] = useState([]);
+      var [meldungen, setMeldungen] = useState([]);
       var [buchungen, setBuchungen] = useState([]);
       var [kofferId, setKofferId] = useState('');
       // v1.6.0: keine Buchung in der Vergangenheit -- Start auf der naechsten
@@ -1458,6 +1678,7 @@
           setKoffer(active);
           setKofferId(function (cur) { return cur || (active[0] ? String(active[0].id) : ''); });
         });
+        ds.getMeldungen().then(setMeldungen).catch(function () {});
         ds.getMeineBuchungen().then(function (bs) {
           var grenze = new Date(); grenze.setDate(grenze.getDate() - 7);
           var g = grenze.getFullYear() + '-' + String(grenze.getMonth() + 1).padStart(2, '0') + '-' + String(grenze.getDate()).padStart(2, '0');
@@ -1603,6 +1824,10 @@
           modus === 'pool' && kapaInfo && e('div', {
             className: 'inline-note' + (kapaInfo.bestand === 0 ? ' warn' : ''), 'data-testid': 'res-kapa-info'
           }, kapaInfo.bestand === 0 ? 'Für diese Auswahl sind keine Geräte erfasst.' : ('noch ' + kapaInfo.frei + ' frei')),
+          e(Hinweise, { className: '', testid: 'res-hinweise', koffer: alleKoffer,
+            meldungen: modus === 'pool'
+              ? relevanteMeldungen(meldungen, alleKoffer, { status: 'reserviert', koffer_id: null, pool_typ: poolTyp, pool_standort: poolStandort })
+              : relevanteMeldungen(meldungen, alleKoffer, { koffer_id: Number(kofferId) || -1 }) }),
           e('div', { className: 'field' },
             e('label', null, 'Zweck (Klasse / Fach)'),
             e('input', { type: 'text', value: zweck, placeholder: 'z. B. 8a Musik', onChange: function (ev) { setZweck(ev.target.value); }, 'data-testid': 'res-zweck' })
@@ -1613,7 +1838,7 @@
         buchungen.length === 0
           ? e('div', { className: 'empty' }, e('div', { className: 'empty-icon' }, '🗓️'), e('p', null, 'Noch keine Reservierung.'))
           : buchungen.map(function (b) {
-              return e(BuchungItem, { key: b.id, b: b, ds: ds, admin: false,
+              return e(BuchungItem, { key: b.id, b: b, ds: ds, admin: false, meldungen: meldungen, koffer: alleKoffer,
                 onDone: function () { reload(); if (props.onChange) props.onChange(); } });
             })
       );
@@ -1667,6 +1892,28 @@
     }
     function datumDE(iso) { var p = String(iso || '').split('-'); return p.length === 3 ? (p[2] + '.' + p[1] + '.') : iso; }
     var MELDUNG_ART = { fehlt: 'iPad fehlt', geraet_defekt: 'Gerät kaputt', tastatur_defekt: 'Tastatur kaputt', ladekabel: 'Ladekabel/Netzteil', sonstiges: 'Sonstiges' };
+    // v1.7.0: offene Meldungen, die fuer eine Buchung relevant sind
+    //  - konkrete/abgeholte Koffer: Meldungen genau dieser Koffer
+    //  - Pool-Reservierung ohne Abholung: Meldungen aller Koffer dieses Pools
+    function relevanteMeldungen(meldungen, kofferListe, b) {
+      if (!meldungen || !meldungen.length) return [];
+      var ids = [];
+      if (b.koffer_id != null) ids = [b.koffer_id];
+      else if (b.koffer_ids && b.koffer_ids.length) ids = b.koffer_ids;
+      else if (b.status === 'reserviert') ids = (kofferListe || []).filter(function (k) { return k.typ === b.pool_typ && k.standort === b.pool_standort; }).map(function (k) { return k.id; });
+      return meldungen.filter(function (m) { return ids.indexOf(m.koffer_id) !== -1; });
+    }
+    function hinweisZeile(m, kofferListe) {
+      var k = (kofferListe || []).find(function (x) { return x.id === m.koffer_id; });
+      return (k ? kofferTitel(k) + ': ' : '') + meldungText(m);
+    }
+    function Hinweise(props) {
+      if (!props.meldungen || !props.meldungen.length) return null;
+      return e('div', { className: props.className || 'item-extra', 'data-testid': props.testid || 'hinweise' },
+        props.meldungen.map(function (m) {
+          return e('div', { key: m.id, className: 'meldung-chip' }, e('span', null, '⚠ ' + hinweisZeile(m, props.koffer)));
+        }));
+    }
     function meldungText(m) {
       var t = MELDUNG_ART[m.art] || m.art;
       if (m.art === 'fehlt' && m.anzahl) t = m.anzahl + (m.anzahl === 1 ? ' Gerät fehlt' : ' Geräte fehlen');
@@ -1767,6 +2014,12 @@
             text += ' · ✓ auf deine Reservierung gebucht — ' + res.pool.abgeholt + ' von ' + res.pool.anzahl + ' abgeholt';
           }
           setResult({ ok: true, title: 'Ausgegeben', text: text });
+          // v1.7.0: bekannte Probleme dieses Koffers gleich mit anzeigen
+          Promise.all([ds.getKoffer(), ds.getMeldungen()]).then(function (r) {
+            var k = r[0].find(function (x) { return x.barcode === ((res.koffer && res.koffer.barcode) || barcode); });
+            var ms = k ? r[1].filter(function (m) { return m.koffer_id === k.id; }) : [];
+            if (ms.length) setResult({ ok: true, title: 'Ausgegeben', text: text, hinweise: ms.map(meldungText) });
+          }).catch(function () {});
           showToast('Ausgegeben: ' + kname, 'success');
           reset(true); if (props.onChange) props.onChange();
         }).catch(function (err) {
@@ -1970,6 +2223,8 @@
             result.retry && e('button', {
               className: 'btn btn-ghost', style: { marginTop: '10px' }, onClick: retryPending, 'data-testid': 'station-retry'
             }, '🔁 Erneut versuchen (gleicher Vorgang)'),
+            result.ok && result.hinweise && e('div', { 'data-testid': 'station-hinweise', style: { marginTop: '8px' } },
+              result.hinweise.map(function (h, i) { return e('div', { key: i, className: 'meldung-chip', style: { justifyContent: 'center' } }, '⚠ Bekannt: ' + h); })),
             result.ok && result.meldenBarcode && e('button', {
               className: 'btn btn-ghost', style: { marginTop: '10px' }, 'data-testid': 'station-melden',
               onClick: function () {
@@ -2194,6 +2449,12 @@
       var [tab, setTab] = useState(function () { return QS.get('view') === 'scan' ? 'scannen' : 'reservieren'; });
       var [refreshKey, setRefreshKey] = useState(0);
       var [raster, setRaster] = useState(null); // S4: Stundenraster aus der DB
+      var [ipadAdmin, setIpadAdmin] = useState(false); // v1.7.0: Verwaltung nur fuer ipad_admins
+      var [offeneMeldungen, setOffeneMeldungen] = useState(0);
+      useEffect(function () {
+        if (!ipadAdmin || !ds) return;
+        ds.getMeldungen().then(function (ms) { setOffeneMeldungen((ms || []).length); }).catch(function () {});
+      }, [ipadAdmin, ds, refreshKey, tab]);
       var modeRef = useRef('demo');
 
       var bump = useCallback(function () { setRefreshKey(function (n) { return n + 1; }); }, []);
@@ -2232,6 +2493,9 @@
             : { id: 0, display_name: 'Demo Lehrer', kuerzel: forcedKuerzel, role: istAdminDemo ? 'admin' : 'member', avatar_color: '#7c3aed' };
           modeRef.current = 'demo';
           var d = new DataService(null, demoUser);
+          // Demo: iPad-Admin ist nur Ko (wie live: nur Norbert in ipad_admins)
+          d.ipadAdmin = !window.__FORCE_USER || forcedKuerzel.toUpperCase() === 'KO';
+          setIpadAdmin(d.ipadAdmin);
           setDs(d); setProfile(demoUser); setReady(true);
           window.__KRS_TEST_HOOKS__ = { ds: d, uuid: uuid, errMsg: errMsg, makeErr: makeErr, stundenListe: stundenListe, istBuchbar: istBuchbar };
           return;
@@ -2262,6 +2526,7 @@
               .then(function (ur) {
                 var u = (ur && ur.data) || { id: null, display_name: session.user.email, kuerzel: '?', role: 'member' };
                 d.setUser(u); setProfile(u); setReady(true);
+                d.pruefeIpadAdmin().then(function (x) { d.ipadAdmin = x; setIpadAdmin(x); });
                 window.__KRS_TEST_HOOKS__ = { ds: d, uuid: uuid, errMsg: errMsg, makeErr: makeErr, stundenListe: stundenListe, istBuchbar: istBuchbar };
               });
           } else {
@@ -2280,7 +2545,9 @@
       var notLoggedIn = modeRef.current === 'supabase' && !profile;
       // S1: Sichtbarkeit reine Bequemlichkeit -- rpc_auslastung prueft
       // is_app_admin() ohnehin serverseitig und wirft sonst not_authorized.
-      var isAdmin = !!(profile && (profile.role === 'admin' || profile.role === 'owner'));
+      // v1.7.0: Verwaltung/Auslastung/Nutzung NUR fuer iPad-Admins (Tabelle
+      // ipad_admins, derzeit nur Norbert). Die Server-RPCs pruefen das selbst.
+      var isAdmin = ipadAdmin;
 
       return e('div', { className: 'app', 'data-mode': modeRef.current },
         e('div', { className: 'topbar' },
@@ -2300,7 +2567,7 @@
             tabBtn('reservieren', '🗓️', 'Reservieren', tab, setTab),
             tabBtn('scannen', '📷', 'Station', tab, setTab),
             tabBtn('bestand', '📦', 'Bestand', tab, setTab),
-            isAdmin && tabBtn('auslastung', '📊', 'Auslastung', tab, setTab)
+            isAdmin && tabBtn('verwaltung', '🛠️', e(React.Fragment, null, 'Verwaltung', offeneMeldungen ? e('span', { className: 'tab-badge', 'data-testid': 'verw-badge', 'aria-label': offeneMeldungen + ' offene Meldungen' }, offeneMeldungen) : null), tab, setTab)
           )
         ),
         notLoggedIn
@@ -2312,7 +2579,7 @@
               tab === 'reservieren' && e(ReservierenView, { ds: ds, refreshKey: refreshKey, raster: raster, onChange: bump }),
               tab === 'scannen' && e(StationView, { ds: ds, profile: profile, onChange: bump }),
               tab === 'bestand' && e(BestandView, { ds: ds, refreshKey: refreshKey, isAdmin: isAdmin, onChange: bump }),
-              tab === 'auslastung' && isAdmin && e(AuslastungView, { ds: ds })
+              tab === 'verwaltung' && isAdmin && e(VerwaltungView, { ds: ds, refreshKey: refreshKey, onChange: bump })
             ),
         e(DialogHost, null),
         e(Toasts, null)

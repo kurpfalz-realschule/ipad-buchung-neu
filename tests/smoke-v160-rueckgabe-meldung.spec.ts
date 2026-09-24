@@ -71,6 +71,8 @@ test.describe('v1.6.0: Rueckgabe, Storno, Meldungen, Standorte', () => {
     await page.click('[data-testid="tab-bestand"]');
     await expect(page.locator('[data-barcode="KOFFER-02"] [data-testid="koffer-status"]')).toHaveText('Ausgegeben');
     // Admin sieht die offene Buchung auch in der Admin-Liste
+    await page.click('[data-testid="tab-verwaltung"]');
+    await page.click('[data-testid="verw-buchungen"]');
     await expect(page.locator('[data-testid="admin-buchung-item"]')).toHaveCount(1);
     await page.click('[data-testid="tab-reservieren"]');
     await page.click('[data-testid="buchung-rueckgabe"]');
@@ -85,6 +87,7 @@ test.describe('v1.6.0: Rueckgabe, Storno, Meldungen, Standorte', () => {
     await expect(page.locator('[data-barcode="KOFFER-02"] [data-testid="meldung-chip"]')).toContainText('Tastatur kaputt');
     await expect(page.locator('[data-barcode="KOFFER-02"] [data-testid="meldung-chip"]')).toContainText('Nr. 14');
     await page.click('[data-barcode="KOFFER-02"] [data-testid="meldung-erledigt"]');
+    await page.click('[data-testid="dlg-ok"]'); // v1.7.0: Notiz-Dialog (leer lassen)
     await expect(page.locator('[data-barcode="KOFFER-02"] [data-testid="meldung-chip"]')).toHaveCount(0);
   });
 
@@ -107,7 +110,7 @@ test.describe('v1.6.0: Rueckgabe, Storno, Meldungen, Standorte', () => {
 
   test('Mitglied: keine Admin-Knoepfe, keine Auslastung, darf aber melden', async ({ page }) => {
     await page.goto(MEMBER);
-    await expect(page.locator('[data-testid="tab-auslastung"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="tab-verwaltung"]')).toHaveCount(0);
     await page.click('[data-testid="tab-bestand"]');
     await expect(page.locator('[data-testid="koffer-ausser-betrieb"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="admin-buchung-item"]')).toHaveCount(0);

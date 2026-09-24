@@ -35,7 +35,8 @@ for (const g of groessen) {
     expect(scrollCheck2, 'kein horizontales Scrollen (Station)').toBe(true);
 
     // Auslastung: Heatmap lesbar, kein Scrollen der Seite selbst
-    await page.click('[data-testid="tab-auslastung"]');
+    await page.click('[data-testid="tab-verwaltung"]');
+    await page.click('[data-testid="verw-auslastung"]');
     await page.waitForSelector('[data-testid="auslastung-view"]');
     await page.waitForTimeout(300);
     const scrollCheck3 = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);

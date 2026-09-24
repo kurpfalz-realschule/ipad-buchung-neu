@@ -55,8 +55,9 @@ test.describe('Sprint 3: Standort-Klartext und Koffer-Nummern', () => {
     // Code-Kommentaren steht das Wort absichtlich weiter ("LZ ist das
     // Lehrerzimmer, nicht das Lernzentrum") -- das soll es auch.
     await page.goto('/index.html?forceMode=demo&forceUser=Ko');
-    for (const tab of ['reservieren', 'scannen', 'bestand', 'auslastung']) {
+    for (const tab of ['reservieren', 'scannen', 'bestand', 'verwaltung']) {
       await page.click('[data-testid="tab-' + tab + '"]');
+      if (tab === 'verwaltung') await page.click('[data-testid="verw-auslastung"]');
       const sichtbar = await page.locator('body').innerText();
       expect(sichtbar, 'Ansicht ' + tab).not.toMatch(/Lernzentrum/);
     }

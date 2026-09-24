@@ -18,6 +18,7 @@ test.describe('S1: Auslastungs-Ansicht -- Admin-Sichtbarkeit', () => {
     await page.goto('/index.html?forceMode=demo&forceUser=L2');
     await page.waitForSelector('[data-testid="tab-reservieren"]');
     await expect(page.locator('[data-testid="tab-auslastung"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="tab-verwaltung"]')).toHaveCount(0);
   });
 
   test('Admin sieht den Tab und die Ansicht rendert ohne Fehler', async ({ page }) => {
@@ -25,8 +26,9 @@ test.describe('S1: Auslastungs-Ansicht -- Admin-Sichtbarkeit', () => {
     page.on('pageerror', (e) => pageErrors.push(e.message));
 
     await page.goto('/index.html?forceMode=demo&forceUser=Ko');
-    await page.waitForSelector('[data-testid="tab-auslastung"]');
-    await page.click('[data-testid="tab-auslastung"]');
+    await page.waitForSelector('[data-testid="tab-verwaltung"]');
+    await page.click('[data-testid="tab-verwaltung"]');
+    await page.click('[data-testid="verw-auslastung"]');
     await expect(page.locator('[data-testid="auslastung-view"]')).toBeVisible();
 
     // Zeitraum-Presets vorhanden und wechselbar
