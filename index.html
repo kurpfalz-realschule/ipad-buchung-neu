@@ -285,7 +285,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.7.0'; // 23.09.2026: Verwaltung nur iPad-Admin (Meldungen, Nutzung, Auslastung), Problem-Hinweise bei Buchungen
+    window.KRS_BUCHUNG_VERSION = '1.7.1'; // 25.09.2026: S-2 2.5 eigenes Profil per RPC krs_my_profile (E-Mail-Spalte gesperrt)
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -2522,7 +2522,7 @@
               }
             }).catch(function () { console.warn('Stundenraster-Abruf fehlgeschlagen -- Rueckfall auf daten.js aktiv.'); });
             // App-User-Identität aus public.users (über E-Mail) holen
-            client.from('users').select('id, display_name, kuerzel, role, avatar_color').eq('email', session.user.email).maybeSingle()
+            client.rpc('krs_my_profile').select('id, display_name, kuerzel, role, avatar_color').maybeSingle() /* S-2 2.5: E-Mail-Spalte gesperrt */
               .then(function (ur) {
                 var u = (ur && ur.data) || { id: null, display_name: session.user.email, kuerzel: '?', role: 'member' };
                 d.setUser(u); setProfile(u); setReady(true);
