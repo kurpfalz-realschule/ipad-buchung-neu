@@ -285,7 +285,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.7.1'; // 25.09.2026: S-2 2.5 eigenes Profil per RPC krs_my_profile (E-Mail-Spalte gesperrt)
+    window.KRS_BUCHUNG_VERSION = '1.7.2'; // 30.09.2026: vergangene „nicht abgeholt"-Zeilen aus Meine Buchungen
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
@@ -1680,9 +1680,10 @@
         });
         ds.getMeldungen().then(setMeldungen).catch(function () {});
         ds.getMeineBuchungen().then(function (bs) {
+          var heute = todayISO();
           var grenze = new Date(); grenze.setDate(grenze.getDate() - 7);
           var g = grenze.getFullYear() + '-' + String(grenze.getMonth() + 1).padStart(2, '0') + '-' + String(grenze.getDate()).padStart(2, '0');
-          setBuchungen(bs.filter(function (b) { return b.status === 'reserviert' || b.status === 'ausgegeben' || b.datum >= g; }));
+          setBuchungen(bs.filter(function (b) { return buchungSichtbarFuerLehrer(b, heute, g); }));
         }).catch(function () {});
       }, [ds]);
       useEffect(reload, [reload, props.refreshKey]);
@@ -1843,7 +1844,19 @@
             })
       );
     }
-    function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück', abgelaufen: 'Abgelaufen — nicht abgeholt', storniert: 'Storniert' })[s] || s; }
+    // Feedback Franziska Mersi, 30.09.2026: eine Reservierung von letzter Woche
+    // stand noch als „nicht abgeholt" da, obwohl der Koffer geholt wurde.
+    // „Abgeholt" heißt im System nur „per Scan ausgegeben". Ohne Scan setzt der
+    // Nachtjob jede erledigte Reservierung auf abgelaufen. Fuer die Lehrkraft
+    // hat die Zeile keine Aktion — sobald das Datum vorbei ist, verschwindet
+    // sie. Offen (reserviert/ausgegeben) bleibt sichtbar, zurueck die letzten
+    // 7 Tage auch. Die Zaehlung „n. abg." in der Verwaltung bleibt erhalten.
+    function buchungSichtbarFuerLehrer(b, heute, grenze7) {
+      if (b.status === 'reserviert' || b.status === 'ausgegeben') return true;
+      if (b.status === 'abgelaufen' && b.datum < heute) return false;
+      return b.datum >= grenze7;
+    }
+    function statusLabel(s) { return ({ reserviert: 'Reserviert', ausgegeben: 'Ausgegeben', zurueck: 'Zurück', abgelaufen: 'Vorbei', storniert: 'Storniert' })[s] || s; }
     function poolTypLabel(t) { return ({ ipad_koffer: 'iPad-Koffer', laptop_koffer: 'Laptop-Koffer' })[t] || t || 'Gerät'; }
     // ── Standort: Schlüssel bleiben 'LZ' / '1OG' (pool_frei_pro_stunde filtert
     //    exakt darauf), nur der Klartext wird angezeigt. Korrektur 20.09.2026:
