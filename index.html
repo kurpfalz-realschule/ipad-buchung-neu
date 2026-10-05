@@ -253,6 +253,8 @@
   <link rel="preload" href="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" as="script">
   <link rel="preload" href="https://unpkg.com/react@18/umd/react.production.min.js" as="script" crossorigin>
   <link rel="preload" href="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" as="script" crossorigin>
+  <link rel="stylesheet" href="krs-design.css">
+  <script src="krs-design.js"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -285,7 +287,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.7.2'; // 30.09.2026: vergangene „nicht abgeholt"-Zeilen aus Meine Buchungen
+    window.KRS_BUCHUNG_VERSION = '1.8.0'; // 05.10.2026: optionales gemeinsames Design; vertraute Ansicht bleibt Standard
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
