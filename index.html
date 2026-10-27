@@ -279,7 +279,7 @@
     // RPCs: rpc_check_kapazitaet, rpc_checkout, rpc_return
     // ════════════════════════════════════════════════════════════════
 
-    var SUPABASE_URL = 'https://ooejsfixxiuobrpqgfqm.supabase.co';
+    var SUPABASE_URL = 'https://krs-api.linkup.school';
     var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9vZWpzZml4eGl1b2JycHFnZnFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMjQ5MDYsImV4cCI6MjA4OTYwMDkwNn0.GbAv-sB4B8nNE3IPfiYIjbkMKs0Aq03c_-TUcmFY_5s';
 
     var e = React.createElement;
@@ -287,7 +287,7 @@
         useCallback = React.useCallback, useMemo = React.useMemo, useRef = React.useRef;
 
     // ── Test-/CI-Hooks ──────────────────────────────────────────────
-    window.KRS_BUCHUNG_VERSION = '1.8.1'; // 05.10.2026: optionales gemeinsames Design; vertraute Ansicht bleibt Standard
+    window.KRS_BUCHUNG_VERSION = '1.8.2'; // 27.10.2026: Server der Schule. 05.10.2026: optionales gemeinsames Design; vertraute Ansicht bleibt Standard
     var QS = new URLSearchParams(location.search);
     window.__FORCE_DEMO = QS.get('forceMode') === 'demo';
     window.__FORCE_USER = QS.get('forceUser') || null;
